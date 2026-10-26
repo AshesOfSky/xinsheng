@@ -1,0 +1,40 @@
+name: Build WeChat Probe
+on:
+  push:
+    branches: [wechat-probe]
+    paths: ['wechat-probe/**', '.github/workflows/wechat-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: wechat-probe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          architecture: x64
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+      - name: Test read-only handling
+        run: python -m unittest -v
+      - name: Package
+        run: python -m PyInstaller --noconfirm --onedir --console --hide-console hide-early --name WeChatProbe --collect-all wx4py probe.py
+      - name: Verify packaged imports and output
+        run: |
+          python -c "import subprocess,json; p=subprocess.run(['dist/WeChatProbe/WeChatProbe.exe','--self-test'],capture_output=True,text=True,timeout=30); print(p.stdout,p.stderr); assert p.returncode==0; assert json.loads(p.stdout.splitlines()[-1])['sender_status']=='unsupported'"
+      - name: Include source and license notices
+        run: |
+          Copy-Item README.md dist/WeChatProbe/README.md
+          New-Item -ItemType Directory dist/WeChatProbe/source -Force
+          Copy-Item probe.py,test_probe.py,requirements.txt dist/WeChatProbe/source/
+          python -c "from importlib.metadata import distribution; from pathlib import Path; import shutil; d=distribution('wx4py'); out=Path('dist/WeChatProbe/third-party/wx4py'); out.mkdir(parents=True,exist_ok=True); [(shutil.copyfile(d.locate_file(f),out/Path(str(f)).name)) for f in d.files if 'license' in str(f).lower() and d.locate_file(f).is_file()]"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeChatProbe-Windows11-x64
+          path: wechat-probe/dist/WeChatProbe/
+          retention-days: 30
