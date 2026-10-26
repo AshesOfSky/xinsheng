@@ -1,5 +1,9 @@
 # 心声 · QQ 私聊回复助手
 
+> 本分支另包含 **大肥鱼 · 微信群聊桌面客户端**：安装与使用见
+> [微信桌面版说明](wechat-agy/DESKTOP.md)，源码在 [wechat-agy](wechat-agy/)。
+> 原有 QQ 助手和只读 WeChatProbe 独立保留。
+
 心声是运行在 Windows 上的 QQ 私聊回复助手。它通过 NapCat 和 OneBot 接收指定联系人的新消息，使用本机已登录的 Codex CLI 生成可编辑草稿，支持人工确认发送、自动回复、历史风格参考和桌面新消息提醒。
 
 ## 能做什么

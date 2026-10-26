@@ -21,10 +21,16 @@ def event_record(event):
     }
 
 
+def emit(record):
+    # Frozen Windows workers may use GBK despite PYTHONIOENCODING.
+    print(json.dumps(record, ensure_ascii=True), flush=True)
+
+
 def worker(group, nickname):
+    # wx4py also writes human-readable logs to stdout.
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
     from wx4py import CallbackHandler, WeChatClient
-    def emit(record):
-        print(json.dumps(record, ensure_ascii=False), flush=True)
     def received(event):
         emit(event_record(event))
         return None
@@ -123,11 +129,12 @@ def main():
                     start_button.configure(state='normal')
                     show('进程退出码：' + str(item['ended']))
                     continue
-                show(item)
                 try:
                     record = json.loads(item)
                 except ValueError:
+                    show(item)
                     continue
+                show(json.dumps(record, ensure_ascii=False))
                 if isinstance(record, dict):
                     records.append(record)
                     if record.get('kind') == 'message':
@@ -166,10 +173,10 @@ if __name__ == '__main__':
     if '--self-test' in sys.argv:
         from wx4py import CallbackHandler
         from types import SimpleNamespace
-        example = SimpleNamespace(group='synthetic', content='hello', timestamp=0,
-                                  group_nickname='probe', is_at_me=False)
+        example = SimpleNamespace(group='测试群', content='你好😀\u2005第二行\n结束', timestamp=0,
+                                  group_nickname='测试小号', is_at_me=False)
         assert CallbackHandler(lambda event: None, auto_reply=False).handle(example) is None
-        print(json.dumps(event_record(example)), flush=True)
+        emit(event_record(example))
         raise SystemExit(0)
     if '--worker' in sys.argv:
         raise SystemExit(worker(sys.argv[2], sys.argv[3]))

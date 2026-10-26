@@ -1,0 +1,10 @@
+.venv/
+.runtime/
+data/
+__pycache__/
+*.log
+build/
+dist/
+release/
+wechatauto_logs/
+@AutomationLog.txt

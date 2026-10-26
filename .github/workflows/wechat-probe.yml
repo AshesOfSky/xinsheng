@@ -26,7 +26,7 @@ jobs:
         run: python -m PyInstaller --noconfirm --onedir --console --hide-console hide-early --name WeChatProbe --collect-all wx4py probe.py
       - name: Verify packaged imports and output
         run: |
-          python -c "import subprocess,json; p=subprocess.run(['dist/WeChatProbe/WeChatProbe.exe','--self-test'],capture_output=True,text=True,timeout=30); print(p.stdout,p.stderr); assert p.returncode==0; assert json.loads(p.stdout.splitlines()[-1])['sender_status']=='unsupported'"
+          python -c "import subprocess,json; p=subprocess.run(['dist/WeChatProbe/WeChatProbe.exe','--self-test'],capture_output=True,timeout=30); assert p.returncode==0, repr(p.stderr); lines=p.stdout.decode('ascii').splitlines(); assert len(lines)==1; r=json.loads(lines[0]); assert r['sender_status']=='unsupported'; assert r['group']=='\u6d4b\u8bd5\u7fa4'; assert r['content']=='\u4f60\u597d\U0001f600\u2005\u7b2c\u4e8c\u884c\n\u7ed3\u675f'; print('Packaged Unicode round-trip passed')"
       - name: Include source and license notices
         run: |
           Copy-Item README.md dist/WeChatProbe/README.md
