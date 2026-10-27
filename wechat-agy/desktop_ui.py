@@ -234,10 +234,12 @@ class Desktop(tk.Tk):
         latency = status.get('last_latency',{})
         info = [status.get('last_decision','等待启动')]
         if running:info += ['Low '+('就绪' if status.get('reply_ready') else '预热中'), 'High '+('就绪' if status.get('reasoning_ready') else '预热中')]
+        if running and config.get('private_contacts'):
+            info.append('私聊 '+('就绪' if status.get('private_ready') else '启动中'))
         if 'model_seconds' in latency:info.append(f"最近生成 {latency['model_seconds']:.1f} 秒")
         if status.get('updated'):info.append('更新 '+status['updated'].replace('T',' '))
         self.details.configure(text='  ·  '.join(info))
-        errors = [str(status[k]) for k in ('error','reply_error','research_error','sticker_send_error','sticker_error') if status.get(k)]
+        errors = [str(status[k]) for k in ('error','reply_error','research_error','sticker_send_error','sticker_error','private_error') if status.get(k)]
         self.error_label.configure(text='\n'.join(dict.fromkeys(errors)))
         self.catalog = {e['code']:e for e in entries}
         for code,entry in self.catalog.items():
@@ -297,7 +299,7 @@ class Desktop(tk.Tk):
             if not row:raise ValueError('请先读取并选择目标群聊。')
             seconds=float(self.cooldown.get())
             if not 2<=seconds<=60:raise ValueError('接话间隔请填 2 到 60 秒。')
-            config=dict(account=self.account.get(),group_id=row['username'],group_name=row['name'],
+            config=dict(self.current_config, account=self.account.get(),group_id=row['username'],group_name=row['name'],
                         poll_seconds=.35,ordinary_reply_seconds=seconds)
             save_config(ROOT,config)
             self.current_config=config

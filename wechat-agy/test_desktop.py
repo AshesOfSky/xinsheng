@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app_paths import initialize_workspace
@@ -51,6 +52,19 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'已有群聊档案'):
             save_config(self.root,dict(self.config,group_id='other@chatroom'))
         self.assertEqual(json.loads((self.root/'data/config.json').read_text(encoding='utf-8')), self.config)
+
+    def test_saving_group_settings_preserves_private_contacts(self):
+        from desktop_ui import Desktop
+        contact = {'id': 'wxid_example', 'name': '朋友'}
+        state = SimpleNamespace(current_config=dict(self.config, private_contacts=[contact]),
+            group_map={'chosen': {'username':'room@chatroom','name':'测试群'}},
+            group=SimpleNamespace(get=lambda: 'chosen'),
+            account=SimpleNamespace(get=lambda: 'sample_account'),
+            cooldown=SimpleNamespace(get=lambda: '2'),
+            settings_note=SimpleNamespace(configure=lambda **kw: None))
+        with patch('desktop_ui.save_config') as save:
+            Desktop.save_settings(state)
+        self.assertEqual(save.call_args.args[1]['private_contacts'], [contact])
 
 
 if __name__ == '__main__':unittest.main()

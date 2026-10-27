@@ -24,6 +24,7 @@ from native_stickers import media_matches
 from stickers import StickerLibrary, sticker_id
 from classify_stickers import classify, SCHEMA as STICKER_SCHEMA
 from app_paths import initialize_workspace
+from private_host import private_loop
 
 
 def write_json(path, value):
@@ -52,6 +53,8 @@ class Bot:
         self.memory_model = AgySession(schema=MEMORY_SCHEMA, label='memory', timeout=180)
         self.last_send = 0.0
         self.send_lock = threading.Lock()
+        self.private_sessions = {}
+        self.private_sessions_lock = threading.Lock()
         self.status_lock = threading.Lock()
         self.pending_lock = threading.RLock()
         self.pending_sends = {}
@@ -424,10 +427,14 @@ class Bot:
         memory_thread = threading.Thread(target=self.memory_loop, daemon=True)
         research_thread = threading.Thread(target=self.research_loop, daemon=True)
         sticker_thread = threading.Thread(target=self.sticker_loop, daemon=True)
+        private_threads = [threading.Thread(target=private_loop, args=(self, contact), daemon=True)
+                           for contact in self.config.get('private_contacts', [])]
         reply_thread.start()
         memory_thread.start()
         research_thread.start()
         sticker_thread.start()
+        for thread in private_threads:
+            thread.start()
         self.update_status(state='running')
         logging.info('ready; chat=%s reasoning=%s memory=%s', CHAT_MODEL, MODEL, MODEL)
         try:
@@ -465,10 +472,17 @@ class Bot:
             self.deep_model.close()
             self.memory_model.close()
             self.sticker_model.close()
+            with self.private_sessions_lock:
+                sessions = list(self.private_sessions.values())
+            for session in sessions:
+                session.fast.close()
+                session.high.close()
             reply_thread.join(timeout=8)
             memory_thread.join(timeout=8)
             research_thread.join(timeout=8)
             sticker_thread.join(timeout=8)
+            for thread in private_threads:
+                thread.join(timeout=8)
             self.archive.export_notes()
             self.update_status(state='stopped')
 
