@@ -2,10 +2,11 @@ name: Build DaFeiYu Desktop
 on:
   push:
     branches: [wechat-probe]
+    tags: ['dafeiyu-v0.2.0']
     paths: ['wechat-agy/**', '.github/workflows/dafeiyu-desktop.yml']
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   windows:
     runs-on: windows-latest
@@ -28,3 +29,19 @@ jobs:
           name: DaFeiYu-Windows-x64-v0.2.0
           path: wechat-agy/release/DaFeiYu-Windows-x64-v0.2.0.zip
           retention-days: 30
+      - name: Publish tagged release
+        if: github.ref == 'refs/tags/dafeiyu-v0.2.0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --draft --title "大肥鱼桌面版 $tag" --notes-file RELEASE_NOTES.md
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag release/DaFeiYu-Windows-x64-v0.2.0.zip --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
