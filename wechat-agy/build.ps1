@@ -28,7 +28,7 @@ try {
         throw 'Packaged resources are incomplete.'
     }
     New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'release') -Force | Out-Null
-    $zip = Join-Path $PSScriptRoot 'release\DaFeiYu-Windows-x64-v0.2.6.zip'
+    $zip = Join-Path $PSScriptRoot 'release\DaFeiYu-Windows-x64-v0.2.7.zip'
     Compress-Archive -LiteralPath $outputPath -DestinationPath $zip -Force
     Write-Host ('Release package: ' + $zip)
 } finally { Pop-Location }

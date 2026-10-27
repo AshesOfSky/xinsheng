@@ -77,6 +77,7 @@ class PrivateHostTests(unittest.TestCase):
 
         contact['relationship'] = 'girlfriend'
         with patch('private_host.PrivateConversation', return_value=chat) as create, \
+                patch('private_proactive.PrivateProactive'), \
                 patch('private_host.send_private', side_effect=send), \
                 patch('private_host.confirm_private', side_effect=confirm):
             private_loop(bot, contact)

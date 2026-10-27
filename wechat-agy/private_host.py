@@ -1,5 +1,6 @@
 """Serve one explicitly selected private chat alongside the group bot."""
 import logging
+import threading
 import time
 
 from native_input import chat_input, editor_empty, send_text
@@ -52,12 +53,74 @@ def confirm_private(chat, text, started):
     return False
 
 
+def try_proactive(bot, chat, contact, proactive, draft):
+    """Send a prepared opening only if the chat is still idle."""
+    new_messages = chat.poll()
+    if new_messages or not draft or bot.stop.is_set():
+        return new_messages
+    with bot.send_lock:
+        new_messages = chat.poll()
+        if new_messages or bot.stop.is_set() or not proactive.eligible():
+            return new_messages
+        row_id = proactive.reserve(draft)
+        if row_id is None:
+            return []
+        started = time.time()
+        try:
+            ok, detail = send_private(bot.bridge, contact, draft)
+        except PrivateTargetUnavailable as exc:
+            proactive.finish(row_id, 'cancelled')
+            bot.update_private_status(contact['id'], private_state='error', private_error=str(exc))
+            return []
+        except Exception:
+            proactive.finish(row_id, 'unconfirmed')
+            raise
+    if not ok:
+        proactive.finish(row_id, 'unconfirmed')
+        bot.update_private_status(contact['id'], private_state='error', private_error=detail)
+        return []
+    confirmed = False
+    try:
+        for _ in range(40):
+            if confirm_private(chat, draft, started):
+                confirmed = True
+                break
+            if bot.stop.wait(.5):
+                break
+    finally:
+        proactive.finish(row_id, 'confirmed' if confirmed else 'unconfirmed')
+    bot.update_private_status(contact['id'], private_state='ready' if confirmed else 'error',
+                              private_error=None if confirmed else '主动私聊发送后未能回读确认')
+    logging.info('private proactive %s', 'confirmed' if confirmed else 'unconfirmed')
+    return []
+
+
+def start_proactive(bot, proactive):
+    """Generate on independent model sessions while the listener keeps polling."""
+    job = {'done': threading.Event(), 'draft': None, 'error': None}
+
+    def work():
+        try:
+            persona = (bot.data.parent / 'PERSONA.md').read_text(encoding='utf-8')
+            job['draft'] = proactive.generate(persona)
+        except Exception as exc:
+            job['error'] = exc
+        finally:
+            job['done'].set()
+
+    job['thread'] = threading.Thread(target=work, name='private-proactive', daemon=True)
+    job['thread'].start()
+    return job
+
+
 def private_loop(bot, contact):
     import pythoncom
 
     pythoncom.CoInitialize()
     chat = None
     pending = []
+    proactive = None
+    proactive_job = None
     try:
         chat = PrivateConversation(bot.bridge.db, bot.data.parent, contact['id'], contact['name'],
                                    relationship=contact.get('relationship'))
@@ -67,6 +130,10 @@ def private_loop(bot, contact):
         pending = chat.pending()
         draft = None
         file_coordinator = None
+        if contact.get('relationship') == 'girlfriend':
+            from private_proactive import PrivateProactive
+            proactive = PrivateProactive(chat)
+        next_proactive_check = 0.0
         bot.update_private_status(contact['id'], private_ready=True, private_state='ready', private_error=None)
         while not bot.stop.is_set():
             deferred = []
@@ -76,6 +143,18 @@ def private_loop(bot, contact):
                     pending.extend(new_messages)
                     draft = None
                 if not pending:
+                    if proactive_job and proactive_job['done'].is_set():
+                        job, proactive_job = proactive_job, None
+                        if job['error']:
+                            logging.warning('private proactive generation failed: %s', type(job['error']).__name__)
+                        elif job['draft']:
+                            pending.extend(try_proactive(bot, chat, contact, proactive, job['draft']))
+                            if pending:
+                                continue
+                    if proactive and proactive_job is None and time.monotonic() >= next_proactive_check:
+                        next_proactive_check = time.monotonic() + 60
+                        if proactive.eligible():
+                            proactive_job = start_proactive(bot, proactive)
                     bot.stop.wait(bot.config['poll_seconds'])
                     continue
                 if contact.get('relationship') == 'girlfriend':
@@ -191,6 +270,12 @@ def private_loop(bot, contact):
             logging.exception('private listener failed to start')
             bot.update_private_status(contact['id'], private_ready=False, private_state='error', private_error=str(exc))
     finally:
+        if proactive:
+            proactive.close()
+        if proactive_job:
+            # The background worker may still be unwinding cancellation and
+            # can access the archive; don't close it until that worker exits.
+            proactive_job['thread'].join()
         if chat:
             with bot.private_sessions_lock:
                 bot.private_sessions.pop(contact['id'], None)

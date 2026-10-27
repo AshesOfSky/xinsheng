@@ -1,6 +1,6 @@
 param([string]$Workspace = '')
 $ErrorActionPreference = 'Stop'
-$installPath = Join-Path $env:LOCALAPPDATA 'Programs\DaFeiYu\0.2.6'
+$installPath = Join-Path $env:LOCALAPPDATA 'Programs\DaFeiYu\0.2.7'
 New-Item -ItemType Directory -Path $installPath -Force | Out-Null
 if ([IO.Path]::GetFullPath($PSScriptRoot) -ne [IO.Path]::GetFullPath($installPath)) {
     Get-ChildItem -LiteralPath $PSScriptRoot | ForEach-Object {
