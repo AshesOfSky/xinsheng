@@ -186,11 +186,20 @@ class Bot:
                             payload['background_questions'] = [compact_message(m) for m in self.research_pending.values()]
                         generation_started = time.monotonic()
                         self.update_status(reply_state='generating', batch_messages=len(batch))
-                        result, used_model, generation_seconds = generate_reply(self.reply_model, self.deep_model, payload,
-                            cancel=(lambda: self.stop.is_set() or self.jobs.has_mention()) if not required
-                                   else self.stop.is_set,
-                            defer=lambda request, web, elapsed: self.defer_research(
-                                request, web, elapsed, batch, generation_started))
+                        try:
+                            result, used_model, generation_seconds = generate_reply(self.reply_model, self.deep_model, payload,
+                                cancel=(lambda: self.stop.is_set() or self.jobs.has_mention()) if not required
+                                       else self.stop.is_set,
+                                defer=lambda request, web, elapsed: self.defer_research(
+                                    request, web, elapsed, batch, generation_started))
+                        except GenerationSuperseded:
+                            raise
+                        except Exception:
+                            # A failed generation has not sent anything; keep required @ for retry.
+                            self.jobs.restore_required(batch)
+                            if required:
+                                self.stop.wait(2)
+                            raise
                         if result.get('deferred'):
                             self.update_status(reply_state='ready', last_decision='认真问题已转后台，继续接话')
                             continue

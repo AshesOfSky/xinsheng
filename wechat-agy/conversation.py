@@ -31,9 +31,9 @@ class ConversationInbox:
             while not stop.is_set():
                 if self.pending:
                     urgent = any(self.required(m) for m in self.pending.values())
-                    # At most 1.2 s to collect a burst; @ bypasses the wait.
-                    ready_at = max(not_before, min(self.changed_at + 0.55,
-                                                   self.first_pending_at + 1.2))
+                    # Briefly collect a burst; @ bypasses the wait.
+                    ready_at = max(not_before, min(self.changed_at + 0.25,
+                                                   self.first_pending_at + 0.8))
                     if urgent or time.monotonic() >= ready_at:
                         batch = sorted(self.pending.values(), key=lambda m: m['id'])
                         self.pending.clear()

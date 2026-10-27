@@ -34,6 +34,52 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(inbox.take(threading.Event(), before + 60)[0]['id'], 1)
         self.assertLess(time.monotonic() - before, 0.2)
 
+    def test_generation_failure_retries_unanswered_mention(self):
+        bot = Bot.__new__(Bot)
+        bot.stop = threading.Event()
+        bot.stickers = None
+        bot.favorite_jobs = queue.Queue()
+        bot.config = {'ordinary_reply_seconds': 0}
+        bot.jobs = ConversationInbox()
+        original = message(1, '@大肥鱼 在吗', True)
+        bot.jobs.put(original)
+        bot.archive = SimpleNamespace(recent=lambda n: [original], profiles=lambda ids: [],
+            record_outgoing=lambda *a: 1, outgoing_status=lambda *a: None)
+        bot.last_send = 0
+        bot.send_lock = threading.Lock()
+        bot.pending_lock = threading.RLock()
+        bot.pending_sends = {}
+        bot.research_pending = {}
+        bot.research_lock = threading.Lock()
+        bot.update_status = lambda **kw: None
+        calls, sent = [], []
+
+        def ask(payload, cancel=None):
+            if payload['task'] == 'warmup':
+                return {'reply': False, 'text': '', 'needs_high': False, 'needs_web': False}
+            calls.append(payload)
+            if len(calls) == 1:
+                raise RuntimeError('temporary network error')
+            return {'reply': True, 'text': '大肥鱼在呢', 'needs_high': False, 'needs_web': False}
+
+        def send(text):
+            sent.append(text)
+            bot.stop.set()
+            return True, ''
+
+        bot.reply_model = SimpleNamespace(ask=ask, model='low', last_result={'seconds': 0.1})
+        bot.deep_model = None
+        bot.bridge = SimpleNamespace(prepare_sender=lambda: None, send=send, last_send_timing={'ui_seconds': 0.1})
+        timer = threading.Timer(8, bot.stop.set)
+        timer.start()
+        try:
+            bot.reply_loop()
+        finally:
+            bot.stop.set()
+            timer.cancel()
+        self.assertEqual(sent, ['大肥鱼在呢'])
+        self.assertEqual([m['id'] for m in calls[1]['unanswered_mentions']], [1])
+
     def test_topic_change_during_generation_never_sends_old_draft(self):
         bot = Bot.__new__(Bot)
         bot.stop = threading.Event()
