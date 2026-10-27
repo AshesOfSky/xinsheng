@@ -8,7 +8,7 @@ from unittest.mock import patch
 from docx import Document
 from openpyxl import Workbook
 from political_guard import PoliticalGuard
-from private_file_worker import FileTaskError, office_text, run_file_task, codex_runner
+from private_file_worker import FileTaskError, office_text, run_file_task, codex_runner, locate_attachment
 
 
 class Session:
@@ -24,8 +24,9 @@ class Session:
 class DB:
     def __init__(self, root):
         self.account_dir = str(root)
-    def get_message_row(self, contact, local_id, local_type, shard):
-        return {'local_type': 49, 'server_id': 123}
+    def get_message_row(self, contact, local_id, shard):
+        return {'local_type': 6 << 32 | 49, 'sender_username': contact,
+                'create_time': datetime.datetime(2026, 10, 27).timestamp()}
 
 
 class FileWorkerTest(unittest.TestCase):
@@ -37,18 +38,15 @@ class FileWorkerTest(unittest.TestCase):
         self.db = DB(self.root / 'account')
         self.row = {'sender_username': 'wxid_test', 'shard': 'message_0.db', 'local_id': 1}
         self.guard = PoliticalGuard(model_session=Session())
-        self.patch = patch('private_file_worker.MediaDownloader')
-        self.downloader = self.patch.start()
-        self.downloader.return_value._file_name.return_value = '账目.xlsx'
+        self.filename = '账目.xlsx'
     def tearDown(self):
-        self.patch.stop()
         self.temp.cleanup()
     def xlsx(self, value='普通账目'):
         wb = Workbook(); wb.active['A1'] = value; wb.save(self.folder / '账目.xlsx')
     def copy_runner(self, folder, request, filename):
         shutil.copy2(folder / 'input' / filename, folder / 'output' / 'result.xlsx')
     def run_task(self, runner=None):
-        filename = self.downloader.return_value._file_name.return_value
+        filename = self.filename
         source = self.folder / filename
         size = source.stat().st_size if source.exists() else 10
         self.row['content'] = (f'<msg><appmsg><title>{filename}</title><type>6</type>'
@@ -73,6 +71,14 @@ class FileWorkerTest(unittest.TestCase):
     def test_unknown_sender(self):
         self.xlsx(); self.row['sender_username'] = 'another'
         with self.assertRaisesRegex(FileTaskError, '身份'): self.run_task()
+
+    def test_compound_file_type_rejects_incorrect_size(self):
+        self.xlsx()
+        self.row['create_time'] = datetime.datetime(2026, 10, 27).timestamp()
+        self.row['content'] = ('<msg><appmsg><title>账目.xlsx</title><type>6</type>'
+                               '<appattach><totallen>1</totallen></appattach></appmsg></msg>')
+        with self.assertRaisesRegex(FileTaskError, '月份或大小不符'):
+            locate_attachment(self.db, 'wxid_test', self.row)
     def test_political_input_and_uncertain_are_not_processed(self):
         self.xlsx('政治')
         with self.assertRaisesRegex(FileTaskError, '政治'): self.run_task()
@@ -87,7 +93,7 @@ class FileWorkerTest(unittest.TestCase):
             (folder / 'output/result.xlsx').write_text('invalid')
         with self.assertRaisesRegex(FileTaskError, 'Office'): self.run_task(malformed)
     def test_docx(self):
-        self.downloader.return_value._file_name.return_value = '文档.docx'
+        self.filename = '文档.docx'
         doc = Document(); doc.add_paragraph('日常事项'); doc.save(self.folder / '文档.docx')
         def copy(folder, request, filename):
             shutil.copy2(folder / 'input' / filename, folder / 'output/result.docx')

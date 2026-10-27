@@ -225,6 +225,21 @@ class PrivateFileIntegrationTests(unittest.TestCase):
         self.stop_loop()
         self.assertIn('把表头加粗后发回给我', runner.call_args.args[3])
 
+    def test_review_gross_profit_table_is_routed_to_file_work(self):
+        started = threading.Event()
+        def run(db, contact_id, attachment, request, guard, root):
+            started.set()
+            raise RuntimeError('测试不产生或发送文件')
+        runner = self.stack.enter_context(patch('private_file_host.run_file_task', side_effect=run))
+        sender = self.stack.enter_context(patch('private_files.send_private_file'))
+        self.start_loop()
+        self.add_text(1, '检查一下毛利表')
+        self.add_file(2)
+        self.assertTrue(started.wait(3), '毛利表核查请求未进入文件处理')
+        self.stop_loop()
+        self.assertEqual(runner.call_args.args[3], '检查一下毛利表')
+        sender.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
