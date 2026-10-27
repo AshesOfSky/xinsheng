@@ -73,6 +73,28 @@ class Bot:
             self.status['updated'] = datetime.now().isoformat(timespec='seconds')
             write_json(self.data / 'status.json', self.status)
 
+    def update_private_status(self, contact_id, **values):
+        """Keep per-contact state so one worker cannot clear another's error."""
+        with self.status_lock:
+            contacts = self.config.get('private_contacts', [])
+            states = self.status.setdefault('private_contacts', {})
+            for contact in contacts:
+                states.setdefault(contact['id'], {'private_ready': False, 'private_state': 'starting'})
+            states.setdefault(contact_id, {}).update(values)
+            selected = [states[contact['id']] for contact in contacts]
+            self.status['private_ready'] = bool(selected) and all(s.get('private_ready') for s in selected)
+            errors = [f"{contact['name']}: {states[contact['id']]['private_error']}"
+                      for contact in contacts if states[contact['id']].get('private_error')]
+            self.status['private_error'] = '；'.join(errors) if errors else None
+            self.status['private_state'] = ('error' if errors else
+                'starting' if not self.status['private_ready'] else
+                'generating' if any(s.get('private_state') == 'generating' for s in selected) else 'ready')
+            for key in ('private_last_model', 'private_decision'):
+                if key in values:
+                    self.status[key] = values[key]
+            self.status['updated'] = datetime.now().isoformat(timespec='seconds')
+            write_json(self.data / 'status.json', self.status)
+
     def guard_group(self, batch, context=None, draft=''):
         """Classify this batch against recent group context and, if supplied, a draft."""
         context = self.archive.recent(18) if context is None else context

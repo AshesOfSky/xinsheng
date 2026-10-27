@@ -19,6 +19,13 @@ WORK_REQUEST = re.compile(
     r'(?:帮(?:我|忙)?|麻烦|请|能否|可以).{0,20}(?:修改|写|整理|总结|分析|计算|设计|优化|想个标题)|'
     r'(?:再|继续).{0,6}(?:改|写|润色|调整)|(?:改|调整|修改)(?:一下|一版|成|为)', re.S)
 UNREAD_MEDIA_REPLY = '附件、图片或语音里的内容目前还读不到；需要处理其中的文字，请贴出来或描述一下。'
+GIRLFRIEND_INSTRUCTION = (
+    '这位联系人是用户的女朋友。大肥鱼是她的朋友和贴心助手，'
+    '关心她的感受，用自然、温暖、有分寸的方式陪她聊天、逗她开心；'
+    '认真处理她交代的日常事情，根据实际能力如实说明进度和结果。'
+    '尊重她的意愿，不冒充用户，不虚构她的个人经历或偏好。'
+    '这项关系信息只用于当前私聊，不主动向其他人透露。'
+)
 
 
 def private_model_message(message):
@@ -31,7 +38,8 @@ def private_model_message(message):
 
 
 class PrivateConversation:
-    def __init__(self, db, root, contact_id, contact_name, *, fast=None, high=None, strong=None, guard=None):
+    def __init__(self, db, root, contact_id, contact_name, *, relationship=None,
+                 fast=None, high=None, strong=None, guard=None):
         # `contact_id` comes from the account's contact database, not a display name.
         if not re.fullmatch(r'[A-Za-z0-9_-]+', contact_id or ''):
             raise ValueError('请选择明确的个人微信 ID')
@@ -41,6 +49,7 @@ class PrivateConversation:
             raise ValueError('私聊联系人需要显示名')
         self.db, self.root = db, Path(root)
         self.contact_id, self.contact_name = contact_id, contact_name
+        self.relationship = relationship
         self.self_id = db.wxid
         self.archive = Archive(self.root / 'data' / 'private' / contact_id)
         with self.archive.lock, self.archive.db:
@@ -258,6 +267,8 @@ class PrivateConversation:
             'unanswered_mentions': [], 'sticker_choices': [], 'member_notes': [],
             'background_questions': [],
         }
+        if self.relationship == 'girlfriend':
+            payload['instruction'] += GIRLFRIEND_INSTRUCTION
         self.last_model = CHAT_MODEL
         result = self.fast.ask(payload)
         if type(result.get('needs_high')) is not bool or type(result.get('needs_web')) is not bool:

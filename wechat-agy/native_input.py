@@ -20,6 +20,21 @@ def chat_input(uia, group):
     return edit
 
 
+def editor_content_children(edit):
+    """Read draft controls within the observed WeChat input viewport."""
+    children = list(edit.GetChildren())
+    if (len(children) != 1 or
+            getattr(children[0], 'AutomationId', '') != 'chat_input_field.qt_scrollarea_viewport'):
+        raise RuntimeError('微信输入框结构无法确认')
+    return list(children[0].GetChildren())
+
+
+def editor_empty(uia, edit):
+    """Require a readable empty value and an empty, recognized viewport."""
+    value = uia._read_edit_value(edit)
+    return value is not None and not value.strip() and not editor_content_children(edit)
+
+
 def keyboard_ready(uia, edit):
     try:
         expected = win32gui.GetAncestor(uia._win.NativeWindowHandle, 2)

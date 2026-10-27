@@ -83,6 +83,27 @@ class PrivateConversationTests(unittest.TestCase):
         self.assertTrue((self.root / 'data/private/wxid_friend/archive.sqlite').exists())
         self.assertFalse((self.root / 'data/archive.sqlite').exists())
 
+    def test_relationship_is_only_in_marked_contact_and_reaches_strong_model(self):
+        self.chat.relationship = 'girlfriend'
+        self.chat.start()
+        self.db.rows.append(row(12, 3, 'wxid_friend', '请帮我修改一段文字'))
+        self.chat.generate(self.chat.poll(), '鱼的人格')
+        for model in (self.fast, self.strong):
+            instruction = model.calls[0]['instruction']
+            self.assertIn('这位联系人是用户的女朋友', instruction)
+            self.assertIn('不冒充用户', instruction)
+
+        other_db = Database([row(20, 8, 'wxid_other', '你好')])
+        other_fast = Model({'reply': True, 'text': '收到', 'needs_high': False,
+                            'needs_web': False, 'research_message_ids': [], 'sticker_code': ''})
+        other = PrivateConversation(other_db, self.root, 'wxid_other', '另一位朋友',
+                                    fast=other_fast, high=Model({}), strong=Model({}))
+        self.addCleanup(other.close)
+        other.start()
+        other_db.rows.append(row(21, 9, 'wxid_other', '最近怎么样'))
+        other.generate(other.poll(), '鱼的人格')
+        self.assertNotIn('用户的女朋友', other_fast.calls[0]['instruction'])
+
     def test_serious_question_uses_private_strong_session(self):
         self.chat.start()
         self.db.rows.append(row(12, 3, 'wxid_friend', '请仔细算一下'))

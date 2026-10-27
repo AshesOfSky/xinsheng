@@ -1,10 +1,33 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from native_input import InputFocusLost, send_keys, send_text, submit
+from native_input import InputFocusLost, editor_empty, send_keys, send_text, submit
 
 
 class InputTests(unittest.TestCase):
+    def test_editor_empty_requires_readable_value_and_empty_observed_viewport(self):
+        viewport = SimpleNamespace(AutomationId='chat_input_field.qt_scrollarea_viewport',
+                                   GetChildren=lambda: [])
+        edit = SimpleNamespace(GetChildren=lambda: [viewport])
+        uia = SimpleNamespace(_read_edit_value=lambda _: '')
+        self.assertTrue(editor_empty(uia, edit))
+        viewport.GetChildren = lambda: [SimpleNamespace(Name='附件.xlsx')]
+        self.assertFalse(editor_empty(uia, edit))
+        viewport.GetChildren = lambda: []
+        uia._read_edit_value = lambda _: None
+        self.assertFalse(editor_empty(uia, edit))
+        uia._read_edit_value = lambda _: '已有文字'
+        self.assertFalse(editor_empty(uia, edit))
+
+    def test_unrecognized_or_unreadable_input_tree_rejects_send(self):
+        uia = SimpleNamespace(_read_edit_value=lambda _: '')
+        with self.assertRaises(RuntimeError):
+            editor_empty(uia, SimpleNamespace(GetChildren=lambda: []))
+        def failed():
+            raise RuntimeError('UIA 失败')
+        with self.assertRaises(RuntimeError):
+            editor_empty(uia, SimpleNamespace(GetChildren=failed))
+
     def test_focus_lost_does_not_type_or_attempt_refocus(self):
         edit = Mock()
         with patch('native_input.keyboard_ready', return_value=False), patch('native_input.auto.SendKeys') as keys:

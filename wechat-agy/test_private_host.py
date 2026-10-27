@@ -64,7 +64,7 @@ class PrivateHostTests(unittest.TestCase):
         bot = SimpleNamespace(stop=stop, send_lock=lock, bridge=SimpleNamespace(db=None),
                               data=__import__('pathlib').Path(__file__).parent / 'data',
                               config={'poll_seconds': 0.01}, private_sessions={},
-                              private_sessions_lock=threading.Lock(), update_status=lambda **kw: None)
+                              private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw: None)
 
         def send(bridge, target, text):
             self.assertTrue(lock.locked())
@@ -75,10 +75,12 @@ class PrivateHostTests(unittest.TestCase):
             stop.set()
             return True
 
-        with patch('private_host.PrivateConversation', return_value=chat), \
+        contact['relationship'] = 'girlfriend'
+        with patch('private_host.PrivateConversation', return_value=chat) as create, \
                 patch('private_host.send_private', side_effect=send), \
                 patch('private_host.confirm_private', side_effect=confirm):
             private_loop(bot, contact)
+        self.assertEqual(create.call_args.kwargs['relationship'], 'girlfriend')
         self.assertEqual(statuses, [(42, 'confirmed')])
         self.assertEqual(bot.private_sessions, {})
 
@@ -96,7 +98,7 @@ class PrivateHostTests(unittest.TestCase):
             generate=lambda *args: (generations.append(1) or {'reply': True, 'text': '你好'}))
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds': 0.01},
-            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw: None)
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw: None)
 
         def confirm(*args):
             stop.set()
@@ -128,7 +130,7 @@ class PrivateHostTests(unittest.TestCase):
             generate=generate, archive=archive, guard=allow_guard(), close=lambda:None)
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds':0.01},
-            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw:None)
         def send(bridge, target, text):
             sent.append(text)
             return True, ''
@@ -166,7 +168,7 @@ class PrivateHostTests(unittest.TestCase):
                     guard=SimpleNamespace(filter=guard), close=lambda:None)
                 bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
                     data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds':0.01},
-                    private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+                    private_sessions={}, private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw:None)
                 with patch('private_host.PrivateConversation', return_value=chat), \
                         patch('private_host.send_private') as send:
                     private_loop(bot, contact)
@@ -195,7 +197,7 @@ class PrivateHostTests(unittest.TestCase):
             generate=generate, archive=archive, guard=SimpleNamespace(filter=guard), close=lambda:None)
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent/'data', config={'poll_seconds':0.01},
-            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw:None)
         def send(bridge, target, text):
             sent.append(text)
             return True, ''
@@ -225,7 +227,7 @@ class PrivateHostTests(unittest.TestCase):
             guard=SimpleNamespace(filter=guard), close=lambda:None)
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent/'data', config={'poll_seconds':0.01},
-            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=status)
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_private_status=lambda contact_id, **kw: status(**kw))
         with patch('private_host.PrivateConversation', return_value=chat), \
                 patch.object(chat, 'ack') as ack, patch('private_host.send_private') as send:
             private_loop(bot, contact)
