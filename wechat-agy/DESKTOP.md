@@ -1,6 +1,6 @@
 # 大肥鱼 · Windows 桌面客户端
 
-版本 0.2.4，Windows 11 x64。自带 Python 运行环境，解压后即可打开 `DaFeiYu.exe`。
+版本 0.2.5，Windows 11 x64。自带 Python 运行环境，解压后即可打开 `DaFeiYu.exe`。
 
 ## 安装和第一次启动
 
@@ -73,7 +73,7 @@ python -m venv .venv
 ```
 
 构建会运行测试、生成 EXE，并在一个新的空目录中检查冻结程序的界面、依赖和资源。
-产物是 `release/DaFeiYu-Windows-x64-v0.2.4.zip`。GitHub Actions 执行相同步骤。
+产物是 `release/DaFeiYu-Windows-x64-v0.2.5.zip`。GitHub Actions 执行相同步骤。
 本版本没有代码签名；Windows 首次打开可能显示未知发布者提示。
 
 依赖许可保存在包内 `third-party`。本工具与微信、Google、OpenAI 均无官方隶属关系。

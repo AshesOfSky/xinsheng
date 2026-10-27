@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 
-VERSION = '0.2.4'
+VERSION = '0.2.5'
 BUNDLE = Path(__file__).resolve().parent
 
 

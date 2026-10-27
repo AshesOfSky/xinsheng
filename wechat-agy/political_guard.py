@@ -39,7 +39,7 @@ POLITICAL_TERMS = re.compile(
 )
 
 UNREAD_MEDIA = re.compile(r'^\[(?:媒体内容未读取|(?:图片|语音|文件/链接/卡片)，内容尚未读取)\]$')
-MEDIA_REFERENCE = re.compile(r'图片|照片|截图|图中|图里|这张图|附件|文档|文件|语音|录音')
+MEDIA_DEPENDENT = re.compile(r'^(?:图里|图中|图片里|照片里|附件里|文件里|语音里)(?:说|讲|写)(?:了)?(?:什么|啥)[？?。!！]*$')
 
 INSTRUCTION = (
     '你是静默判定器，不是聊天机器人。根据 targets 判断每条当前消息是否涉及政治，'
@@ -94,7 +94,7 @@ class PoliticalGuard:
         unread_in_context = any(UNREAD_MEDIA.fullmatch(m['text']) for m in targets + recent)
         local_blocked = {m['id'] for m in targets
                          if POLITICAL_TERMS.search(m['text']) or UNREAD_MEDIA.fullmatch(m['text'])
-                         or (unread_in_context and MEDIA_REFERENCE.search(m['text']))}
+                         or (unread_in_context and MEDIA_DEPENDENT.fullmatch(m['text'].strip()))}
         draft_is_transport = draft.lstrip().startswith(('<msg', '<?xml'))
         local_draft_blocked = bool(POLITICAL_TERMS.search(draft)) or draft_is_transport
         if not targets and not draft:

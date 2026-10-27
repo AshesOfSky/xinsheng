@@ -100,6 +100,13 @@ class PoliticalGuardTests(unittest.TestCase):
         self.assertEqual(blocked, {1, 2})
         self.assertEqual(len(session.calls), 1)
 
+    def test_complete_pasted_text_after_unread_file_can_be_judged_on_its_own(self):
+        guard, session = self.guard([{'id':2, 'decision':'allow'}])
+        context = [message(1, '[文件/链接/卡片，内容尚未读取]')]
+        blocked, _ = guard.filter([message(2, '请帮我润色文件文字：今天我们一起吃火锅。')], context)
+        self.assertEqual(blocked, set())
+        self.assertEqual(len(session.calls), 1)
+
     def test_closing_guard_closes_its_own_session(self):
         guard, session = self.guard()
         guard.close()
