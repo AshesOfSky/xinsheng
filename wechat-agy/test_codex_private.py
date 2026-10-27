@@ -84,7 +84,7 @@ class CodexPrivateTests(unittest.TestCase):
         self.assertEqual(args[args.index('--sandbox') + 1], 'read-only')
         self.assertIn('朋友甲', captured['process'].stdin.content)
         self.assertNotIn('朋友乙', captured['process'].stdin.content)
-        self.assertTrue(Path(captured['kwargs']['cwd']).is_relative_to(self.root / '.runtime'))
+        self.assertTrue(Path(captured['kwargs']['cwd']).is_relative_to((self.root / '.runtime').resolve()))
         self.assertFalse(Path(captured['kwargs']['cwd']).exists())
         self.assertEqual(self.client.last_result['model'], 'gpt-6-astra')
         self.assertEqual(self.client.last_result['effort'], 'ultra')
