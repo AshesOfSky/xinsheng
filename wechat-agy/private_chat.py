@@ -8,6 +8,7 @@ import re
 
 from agy_client import AgySession, CHAT_MODEL, FAST_REPLY_SCHEMA, RESEARCH_REPLY_SCHEMA
 from codex_private import CodexPrivate
+from political_guard import PoliticalGuard
 from chat_prompt import compact_message
 from reply_router import researched_reply
 from storage import Archive
@@ -30,7 +31,7 @@ def private_model_message(message):
 
 
 class PrivateConversation:
-    def __init__(self, db, root, contact_id, contact_name, *, fast=None, high=None, strong=None):
+    def __init__(self, db, root, contact_id, contact_name, *, fast=None, high=None, strong=None, guard=None):
         # `contact_id` comes from the account's contact database, not a display name.
         if not re.fullmatch(r'[A-Za-z0-9_-]+', contact_id or ''):
             raise ValueError('请选择明确的个人微信 ID')
@@ -55,6 +56,7 @@ class PrivateConversation:
         self.high = high or AgySession(schema=RESEARCH_REPLY_SCHEMA,
             label=f'private-{contact_id}-high', agent='wechat-researcher', timeout=180)
         self.strong = strong or CodexPrivate(root=self.root)
+        self.guard = guard or PoliticalGuard(label=f'private-{contact_id}-policy')
         self.last_model = None
         self.cursor = None
         self.seen_at_cursor = set()
@@ -242,6 +244,7 @@ class PrivateConversation:
             'task': 'reply', 'must_reply': True,
             'persona': persona.partition('原创口吻示例')[0].strip(),
             'instruction': '这是与一位联系人的微信私聊。直接回应对方最新的提问或消息，'
+                '如果涉及政治人物、政党或政治敏感话题则保持安静，不回复。'
                 '不添加群聊 @，不引用其他聊天或虚构经历。闲聊用简短自然的话回应；'
                 '需要撰写、修改、润色、审阅、整理材料、推理、计算、建议或查证的问题标记 needs_high=true。'
                 '需要当前信息或对方要求联网时同时标记 needs_web=true。'
@@ -289,4 +292,5 @@ class PrivateConversation:
         self.fast.close()
         self.high.close()
         self.strong.close()
+        self.guard.close()
         self.archive.db.close()

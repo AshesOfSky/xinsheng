@@ -25,6 +25,7 @@ from stickers import StickerLibrary, sticker_id
 from classify_stickers import classify, SCHEMA as STICKER_SCHEMA
 from app_paths import initialize_workspace
 from private_host import private_loop
+from political_guard import PoliticalGuard
 
 
 def write_json(path, value):
@@ -48,6 +49,7 @@ class Bot:
         self.favorite_jobs = queue.Queue()
         self.sticker_model = AgySession(schema=STICKER_SCHEMA, label='stickers', timeout=120, agent='wechat-sticker-reader')
         self.reply_model = AgySession(schema=FAST_REPLY_SCHEMA, label='reply-fast', model=CHAT_MODEL)
+        self.political_guard = PoliticalGuard(label='group')
         self.deep_model = AgySession(label='reply-deep', agent='wechat-researcher',
                                      schema=RESEARCH_REPLY_SCHEMA, timeout=180)
         self.memory_model = AgySession(schema=MEMORY_SCHEMA, label='memory', timeout=180)
@@ -70,6 +72,21 @@ class Bot:
             self.status.update(values)
             self.status['updated'] = datetime.now().isoformat(timespec='seconds')
             write_json(self.data / 'status.json', self.status)
+
+    def guard_group(self, batch, context=None, draft=''):
+        """Classify this batch against recent group context and, if supplied, a draft."""
+        context = self.archive.recent(18) if context is None else context
+        return self.political_guard.filter(
+            [compact_message(m, self.stickers) for m in batch],
+            [compact_message(m, self.stickers) for m in context], draft=draft)
+
+    def guard_failure(self, batch, exc):
+        """Preserve required messages for retry; ordinary chatter stays silent."""
+        logging.warning('group political classification unavailable: %s', type(exc).__name__)
+        self.jobs.restore_required(batch)
+        self.update_status(reply_state='ready', last_decision='话题判断暂不可用，保持安静')
+        if any(self.jobs.required(m) for m in batch):
+            self.stop.wait(10)
 
     def seed(self, queue_recent=False):
         was_initialized = bool(self.archive.recent(1))
@@ -173,6 +190,18 @@ class Bot:
                     batch = [msg]
                 msg = batch[-1]
                 try:
+                    try:
+                        blocked_ids, blocked_draft = self.guard_group(batch)
+                    except Exception as exc:
+                        self.guard_failure(batch, exc)
+                        continue
+                    if blocked_draft:
+                        blocked_ids = {m['id'] for m in batch}
+                    batch = [m for m in batch if m['id'] not in blocked_ids]
+                    if not batch:
+                        self.update_status(reply_state='ready', last_decision='涉政话题保持安静')
+                        continue
+                    msg = batch[-1]
                     required = any(self.jobs.required(m) for m in batch)
                     if not required and time.time() - msg['created'] > 45 and not msg.get('idle_followup'):
                         continue
@@ -185,6 +214,9 @@ class Bot:
                     else:
                         payload, snapshot_id = reply_payload(self.archive, batch,
                             (ROOT / 'PERSONA.md').read_text(encoding='utf-8'), self.stickers)
+                        if blocked_ids:
+                            payload['recent_messages'] = [m for m in payload['recent_messages']
+                                                          if m['id'] not in blocked_ids]
                         with self.research_lock:
                             payload['background_questions'] = [compact_message(m) for m in self.research_pending.values()]
                         generation_started = time.monotonic()
@@ -228,6 +260,25 @@ class Bot:
                         self.update_status(reply_state='ready', last_decision='保持安静', reply_error=None)
                         continue
                     if not text and not selected:
+                        continue
+                    review_draft = text
+                    if selected:
+                        review_draft += '\n表情画面与含义：' + '；'.join(
+                            str(selected.get(k, '')) for k in ('description', 'meaning', 'visible_text'))
+                    if completed:
+                        review_draft += '\n来源：' + '；'.join(
+                            str(s.get('title', '')) + ' ' + str(s.get('url', ''))
+                            for s in result.get('sources', []) if isinstance(s, dict))
+                    try:
+                        blocked_ids, blocked_draft = self.guard_group(batch, draft=review_draft)
+                    except Exception as exc:
+                        self.guard_failure(batch, exc)
+                        continue
+                    if blocked_ids or blocked_draft:
+                        for other in batch:
+                            if blocked_ids and other['id'] not in blocked_ids:
+                                self.jobs.put(other)
+                        self.update_status(reply_state='ready', last_decision='涉政话题保持安静')
                         continue
                     with self.send_lock:
                         if self.stop.is_set():
@@ -366,31 +417,95 @@ class Bot:
                 job = self.research_jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
+            requeued = False
+            original_targets = job['targets']
             try:
-                self.update_status(research_state='searching' if job['web'] else 'thinking')
-                result = researched_reply(self.deep_model, job['request'], job['web'], cancel=self.stop.is_set)
-                seconds = job['elapsed'] + self.deep_model.last_result.get('seconds', 0)
-                self.update_status(research_error=None,
-                    last_research_tools=[s['tool'] for s in self.deep_model.last_result.get('steps', []) if s.get('tool')])
-            except Exception as exc:
-                if self.stop.is_set():
-                    break
-                logging.exception('background research failed')
-                result = {'reply': True, 'text': '刚才那次查证没有完成，大肥鱼先不拿旧消息乱报结论。'}
-                seconds = time.monotonic() - job['generation_started']
-                self.update_status(research_error=str(exc))
-            if not self.stop.is_set():
-                target = job['targets'][-1]
+                targets = list(original_targets)
+                context = job['request'].get('recent_messages', [])
+                try:
+                    blocked_ids, blocked_draft = self.political_guard.filter(
+                        [compact_message(m, self.stickers) for m in targets], context)
+                except Exception as exc:
+                    logging.warning('research political classification unavailable: %s', type(exc).__name__)
+                    if any(self.jobs.required(m) for m in targets):
+                        self.stop.wait(10)
+                        if not self.stop.is_set():
+                            self.research_jobs.put(job)
+                            requeued = True
+                    self.update_status(research_state='ready')
+                    continue
+                if blocked_draft:
+                    blocked_ids = {m['id'] for m in targets}
+                targets = [m for m in targets if m['id'] not in blocked_ids]
+                if not targets:
+                    self.update_status(research_state='ready')
+                    continue
+                request = dict(job['request'])
+                for key in ('research_questions', 'new_messages', 'unanswered_mentions', 'recent_messages'):
+                    if key in request:
+                        request[key] = [m for m in request[key] if m['id'] not in blocked_ids]
+                if '_ready_result' in job:
+                    result, seconds = job['_ready_result'], job['_ready_seconds']
+                else:
+                    try:
+                        self.update_status(research_state='searching' if job['web'] else 'thinking')
+                        result = researched_reply(self.deep_model, request, job['web'], cancel=self.stop.is_set)
+                        seconds = job['elapsed'] + self.deep_model.last_result.get('seconds', 0)
+                        self.update_status(research_error=None,
+                            last_research_tools=[s['tool'] for s in self.deep_model.last_result.get('steps', []) if s.get('tool')])
+                    except Exception as exc:
+                        if self.stop.is_set():
+                            break
+                        logging.exception('background research failed')
+                        self.update_status(research_error=str(exc))
+                        if any(self.jobs.required(m) for m in targets):
+                            self.stop.wait(10)
+                            if not self.stop.is_set():
+                                self.research_jobs.put(job)
+                                requeued = True
+                        self.update_status(research_state='ready')
+                        continue
+                    job['_ready_result'], job['_ready_seconds'] = result, seconds
+                review_draft = str(result.get('text', '')) + '\n来源：' + '；'.join(
+                    str(s.get('title', '')) + ' ' + str(s.get('url', ''))
+                    for s in result.get('sources', []) if isinstance(s, dict))
+                try:
+                    blocked_ids, blocked_draft = self.political_guard.filter(
+                        [compact_message(m, self.stickers) for m in targets], context, draft=review_draft)
+                except Exception as exc:
+                    logging.warning('research result classification unavailable: %s', type(exc).__name__)
+                    if any(self.jobs.required(m) for m in targets):
+                        self.stop.wait(10)
+                        if not self.stop.is_set():
+                            self.research_jobs.put(job)
+                            requeued = True
+                    self.update_status(research_state='ready')
+                    continue
+                if blocked_ids:
+                    # A result for a mixed batch may also answer the blocked
+                    # question implicitly; regenerate the remaining requests.
+                    for target in targets:
+                        if target['id'] not in blocked_ids:
+                            self.jobs.put(target)
+                    self.update_status(research_state='ready')
+                    continue
+                if blocked_draft or self.stop.is_set():
+                    self.update_status(research_state='ready')
+                    continue
+                target = targets[-1]
+                result = dict(result)
                 if result.get('text'):
                     result['text'] = '回你刚才的问题：' + result['text']
                 self.jobs.put(dict(target, force_reply=True, _completed_research=result,
-                    _research_member_ids=list(dict.fromkeys(m['member_id'] for m in job['targets'])),
+                    _research_member_ids=list(dict.fromkeys(m['member_id'] for m in targets)),
                     _research_seconds=round(seconds, 3), _generation_started=job['generation_started']))
                 self.update_status(research_state='ready')
-            with self.research_lock:
-                for target in job['targets']:
-                    self.research_pending.pop(target['id'], None)
-            self.research_jobs.task_done()
+            finally:
+                if not requeued:
+                    with self.research_lock:
+                        for target in original_targets:
+                            self.research_pending.pop(target['id'], None)
+                self.research_jobs.task_done()
 
     def confirm_sends(self, message=None):
         with self.pending_lock:
@@ -472,12 +587,14 @@ class Bot:
             self.deep_model.close()
             self.memory_model.close()
             self.sticker_model.close()
+            self.political_guard.close()
             with self.private_sessions_lock:
                 sessions = list(self.private_sessions.values())
             for session in sessions:
                 session.fast.close()
                 session.high.close()
                 session.strong.close()
+                session.guard.close()
             reply_thread.join(timeout=8)
             memory_thread.join(timeout=8)
             research_thread.join(timeout=8)

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import unittest
-from reply_router import generate_reply
+from reply_router import ResearchUnavailable, generate_reply, researched_reply
 
 QUESTION = {'instruction': '', 'new_messages': [{'id': 7, 'text': '请查一下'}]}
 
@@ -26,9 +26,17 @@ class RouterTests(unittest.TestCase):
         high = SimpleNamespace(model='high', last_result={'seconds': 6, 'steps': []},
             ask=lambda *a, **k: {'reply': True, 'text': '没查过却声称今天已经上市',
                                 'sources': [{'title':'假来源','url':'https://example.com/'}]})
-        result, _, _ = generate_reply(fast, high, QUESTION)
-        self.assertNotIn('今天已经上市', result['text'])
-        self.assertEqual(result['sources'], [])
+        with self.assertRaises(ResearchUnavailable):
+            generate_reply(fast, high, QUESTION)
+
+    def test_successful_search_without_usable_sources_does_not_reply(self):
+        for sources in ([], [{'title':'', 'url':'https://example.com/'}],
+                        [{'title':'不支持的网址', 'url':'file:///private'}]):
+            with self.subTest(sources=sources):
+                high = SimpleNamespace(last_result={'steps':[{'tool':'search_web','tool_error':None}]},
+                    ask=lambda *a, **k:{'reply':True,'text':'未经证实','sources':sources})
+                with self.assertRaises(ResearchUnavailable):
+                    researched_reply(high, QUESTION, require_web=True)
 
     def test_slow_research_can_be_queued_without_blocking_chat(self):
         jobs = []

@@ -1,19 +1,25 @@
 """Low handles the conversation; High handles requests needing careful work."""
 
 
+class ResearchUnavailable(RuntimeError):
+    """A requested live check did not produce a usable, verified source."""
+
+
 def researched_reply(high, payload, require_web, cancel=None):
     result = high.ask(dict(payload, require_web=require_web,
         output_instruction='按 require_web 和问题需要实际使用 search_web、read_url_content 查证。'
                            '完成后只输出一个符合 output_schema 的 JSON 对象，包含真实来源 sources。'), cancel=cancel)
     web_steps = [s for s in high.last_result.get('steps', [])
                  if s.get('tool') in ('search_web', 'read_url_content') and not s.get('tool_error')]
-    if require_web and (not web_steps or not result.get('sources')):
-        return {'reply': True, 'text': '这次还没拿到能核对的网页来源，大肥鱼先不乱报数字或当前状态。', 'sources': []}
-    if result.get('reply') and result.get('sources'):
-        links = []
-        for source in result['sources'][:2]:
-            if source['url'].startswith(('https://', 'http://')):
-                links.append(source['title'] + '：' + source['url'])
+    raw_sources = result.get('sources') or []
+    sources = [source for source in raw_sources
+               if isinstance(source, dict) and isinstance(source.get('title'), str)
+               and source['title'].strip() and isinstance(source.get('url'), str)
+               and source['url'].startswith(('https://', 'http://'))]
+    if require_web and (not web_steps or not sources):
+        raise ResearchUnavailable('联网查证未取得可用的真实来源')
+    if result.get('reply') and sources:
+        links = [source['title'] + '：' + source['url'] for source in sources[:2]]
         if links:
             result['text'] = result['text'].rstrip() + '\n来源：\n' + '\n'.join(links)
     return result

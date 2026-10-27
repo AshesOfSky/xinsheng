@@ -3,7 +3,8 @@ import logging
 import time
 
 from native_input import chat_input, send_text
-from private_chat import PrivateConversation
+from private_chat import PrivateConversation, private_model_message
+from reply_router import ResearchUnavailable
 
 
 class PrivateTargetUnavailable(RuntimeError):
@@ -69,6 +70,17 @@ def private_loop(bot, contact):
                 if not pending:
                     bot.stop.wait(bot.config['poll_seconds'])
                     continue
+                context = [private_model_message(m) for m in chat.archive.recent(8)]
+                blocked, _ = chat.guard.filter([private_model_message(m) for m in pending], context)
+                if blocked:
+                    ignored = [m for m in pending if m['id'] in blocked]
+                    chat.ack(ignored)
+                    pending = [m for m in pending if m['id'] not in blocked]
+                    draft = None
+                    bot.update_status(private_state='ready', private_error=None,
+                                      private_decision='涉政话题保持安静')
+                    if not pending:
+                        continue
                 batch = list(pending)
                 if draft is None:
                     bot.update_status(private_state='generating')
@@ -81,6 +93,18 @@ def private_loop(bot, contact):
                         continue
                     draft = result['text'] if result['reply'] and result['text'] else (
                         '大肥鱼在呢，你把具体需要处理的内容发我，我帮你看看。')
+                    context = [private_model_message(m) for m in chat.archive.recent(8)]
+                    blocked, blocked_draft = chat.guard.filter(
+                        [private_model_message(m) for m in batch], context, draft=draft)
+                    if blocked or blocked_draft:
+                        ignored = batch if blocked_draft else [m for m in batch if m['id'] in blocked]
+                        chat.ack(ignored)
+                        ignored_ids = {m['id'] for m in ignored}
+                        pending = [m for m in pending if m['id'] not in ignored_ids]
+                        draft = None
+                        bot.update_status(private_state='ready', private_error=None,
+                                          private_decision='涉政话题保持安静')
+                        continue
                 if bot.stop.is_set():
                     break
                 with bot.send_lock:
@@ -130,7 +154,7 @@ def private_loop(bot, contact):
                     break
                 logging.exception('private reply failed')
                 bot.update_status(private_state='error', private_error=str(exc))
-                bot.stop.wait(30 if chat.last_model == 'gpt-6-astra' else 3)
+                bot.stop.wait(30 if isinstance(exc, ResearchUnavailable) or chat.last_model == 'gpt-6-astra' else 3)
     except Exception as exc:
         if not bot.stop.is_set():
             logging.exception('private listener failed to start')

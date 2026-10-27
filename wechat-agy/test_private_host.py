@@ -6,6 +6,15 @@ from unittest.mock import patch
 from private_host import confirm_private, private_loop, send_private, PrivateTargetUnavailable
 
 
+def message(i, contact, text='你好'):
+    return {'id': i, 'member_id': contact['id'], 'name': contact['name'],
+            'is_self': False, 'is_at': False, 'kind': '文本', 'content': text}
+
+
+def allow_guard():
+    return SimpleNamespace(filter=lambda batch, context, draft='': (set(), False))
+
+
 class PrivateHostTests(unittest.TestCase):
     def test_send_checks_window_wxid_before_writing(self):
         contact = {'id': 'wxid_target', 'name': '朋友'}
@@ -42,16 +51,16 @@ class PrivateHostTests(unittest.TestCase):
         stop = threading.Event()
         lock = threading.Lock()
         contact = {'id': 'wxid_target', 'name': '朋友'}
-        incoming = {'id': 1, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
+        incoming = message(1, contact)
         statuses = []
-        archive = SimpleNamespace(record_outgoing=lambda *args: 42,
+        archive = SimpleNamespace(recent=lambda n: [], record_outgoing=lambda *args: 42,
                                   outgoing_status=lambda *args: statuses.append(args))
         polls = iter([[incoming], []])
         chat = SimpleNamespace(start=lambda: None, poll=lambda: next(polls, []), last_model='test-model',
                                pending=lambda: [], claim=lambda batch: None,
                                release=lambda batch: None, ack=lambda batch: None,
                                generate=lambda *args: {'reply': True, 'text': '你好'},
-                               archive=archive, close=lambda: None)
+                               archive=archive, guard=allow_guard(), close=lambda: None)
         bot = SimpleNamespace(stop=stop, send_lock=lock, bridge=SimpleNamespace(db=None),
                               data=__import__('pathlib').Path(__file__).parent / 'data',
                               config={'poll_seconds': 0.01}, private_sessions={},
@@ -76,14 +85,14 @@ class PrivateHostTests(unittest.TestCase):
     def test_closed_window_keeps_batch_and_reuses_generated_reply(self):
         stop = threading.Event()
         contact = {'id': 'wxid_target', 'name': '朋友'}
-        incoming = {'id': 1, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
+        incoming = message(1, contact)
         statuses, transitions, generations = [], [], []
-        archive = SimpleNamespace(record_outgoing=lambda *args: 42,
+        archive = SimpleNamespace(recent=lambda n: [], record_outgoing=lambda *args: 42,
                                   outgoing_status=lambda *args: statuses.append(args))
         polls = iter([[incoming], [], []])
         chat = SimpleNamespace(start=lambda: None, pending=lambda: [], poll=lambda: next(polls, []), last_model='test-model',
             claim=lambda batch: transitions.append('claim'), release=lambda batch: transitions.append('release'),
-            ack=lambda batch: transitions.append('ack'), archive=archive, close=lambda: None,
+            ack=lambda batch: transitions.append('ack'), archive=archive, guard=allow_guard(), close=lambda: None,
             generate=lambda *args: (generations.append(1) or {'reply': True, 'text': '你好'}))
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds': 0.01},
@@ -105,18 +114,18 @@ class PrivateHostTests(unittest.TestCase):
     def test_new_instructions_during_generation_replace_old_draft(self):
         stop = threading.Event()
         contact = {'id': 'wxid_target', 'name': '朋友'}
-        first = {'id': 1, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
-        second = {'id': 2, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
+        first = message(1, contact, '原问题')
+        second = message(2, contact, '新要求')
         polls = iter([[first], [second], [], []])
         drafts = iter([{'reply':True, 'text':'旧稿'}, {'reply':True, 'text':'新要求的回复'}])
         batches, sent = [], []
-        archive = SimpleNamespace(record_outgoing=lambda *args: 9, outgoing_status=lambda *args: None)
+        archive = SimpleNamespace(recent=lambda n: [], record_outgoing=lambda *args: 9, outgoing_status=lambda *args: None)
         def generate(batch, persona):
             batches.append([m['id'] for m in batch])
             return next(drafts)
         chat = SimpleNamespace(start=lambda:None, pending=lambda:[], poll=lambda:next(polls, []), last_model='test-model',
             claim=lambda batch:None, release=lambda batch:None, ack=lambda batch:None,
-            generate=generate, archive=archive, close=lambda:None)
+            generate=generate, archive=archive, guard=allow_guard(), close=lambda:None)
         bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
             data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds':0.01},
             private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
@@ -132,6 +141,96 @@ class PrivateHostTests(unittest.TestCase):
             private_loop(bot, contact)
         self.assertEqual(batches, [[1], [1, 2]])
         self.assertEqual(sent, ['新要求的回复'])
+
+    def test_political_input_and_political_draft_are_silent(self):
+        for block_at in ('input', 'draft'):
+            with self.subTest(block_at=block_at):
+                stop = threading.Event()
+                contact = {'id': 'wxid_target', 'name': '朋友'}
+                incoming = message(1, contact, '这件事怎么看')
+                polls = iter([[incoming], []])
+                calls, acknowledged = [], []
+                def guard(batch, context, draft=''):
+                    calls.append(draft)
+                    if block_at == 'input':
+                        return {1}, False
+                    return (set(), bool(draft))
+                def ack(batch):
+                    acknowledged.extend(m['id'] for m in batch)
+                    stop.set()
+                archive = SimpleNamespace(recent=lambda n: [], record_outgoing=lambda *args: 1,
+                                          outgoing_status=lambda *args: None)
+                chat = SimpleNamespace(start=lambda:None, pending=lambda:[], poll=lambda:next(polls, []),
+                    last_model='test-model', claim=lambda batch:None, release=lambda batch:None, ack=ack,
+                    generate=lambda *args:{'reply':True, 'text':'待审核的草稿'}, archive=archive,
+                    guard=SimpleNamespace(filter=guard), close=lambda:None)
+                bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
+                    data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds':0.01},
+                    private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+                with patch('private_host.PrivateConversation', return_value=chat), \
+                        patch('private_host.send_private') as send:
+                    private_loop(bot, contact)
+                send.assert_not_called()
+                self.assertEqual(acknowledged, [1])
+                self.assertEqual(len(calls), 1 if block_at == 'input' else 2)
+
+    def test_mixed_private_batch_keeps_the_unrelated_message(self):
+        stop = threading.Event()
+        contact = {'id':'wxid_target','name':'朋友'}
+        political = message(1, contact, '政治话题')
+        ordinary = message(2, contact, '晚饭吃什么')
+        polls = iter([[political, ordinary], []])
+        acknowledged, batches, sent = [], [], []
+        def guard(batch, context, draft=''):
+            return ({m['id'] for m in batch if m['id'] == 1}, False)
+        def generate(batch, persona):
+            batches.append([m['id'] for m in batch])
+            return {'reply':True, 'text':'吃火锅怎么样'}
+        def ack(batch):
+            acknowledged.extend(m['id'] for m in batch)
+        archive = SimpleNamespace(recent=lambda n:[], record_outgoing=lambda *args:1,
+                                  outgoing_status=lambda *args:None)
+        chat = SimpleNamespace(start=lambda:None, pending=lambda:[], poll=lambda:next(polls, []),
+            last_model='test-model', claim=lambda batch:None, release=lambda batch:None, ack=ack,
+            generate=generate, archive=archive, guard=SimpleNamespace(filter=guard), close=lambda:None)
+        bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
+            data=__import__('pathlib').Path(__file__).parent/'data', config={'poll_seconds':0.01},
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+        def send(bridge, target, text):
+            sent.append(text)
+            return True, ''
+        def confirm(*args):
+            stop.set()
+            return True
+        with patch('private_host.PrivateConversation', return_value=chat), \
+                patch('private_host.send_private', side_effect=send), \
+                patch('private_host.confirm_private', side_effect=confirm):
+            private_loop(bot, contact)
+        self.assertEqual(batches, [[2]])
+        self.assertEqual(sent, ['吃火锅怎么样'])
+        self.assertEqual(acknowledged, [1,2])
+
+    def test_private_policy_unavailable_does_not_send_or_ack(self):
+        stop = threading.Event()
+        contact = {'id':'wxid_target','name':'朋友'}
+        incoming = message(1, contact, '待判断内容')
+        def guard(*args, **kwargs):
+            raise RuntimeError('判断暂不可用')
+        def status(**kw):
+            if kw.get('private_error'):
+                stop.set()
+        archive = SimpleNamespace(recent=lambda n:[])
+        chat = SimpleNamespace(start=lambda:None, pending=lambda:[], poll=lambda:[incoming],
+            last_model=None, ack=lambda batch:None, archive=archive,
+            guard=SimpleNamespace(filter=guard), close=lambda:None)
+        bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
+            data=__import__('pathlib').Path(__file__).parent/'data', config={'poll_seconds':0.01},
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=status)
+        with patch('private_host.PrivateConversation', return_value=chat), \
+                patch.object(chat, 'ack') as ack, patch('private_host.send_private') as send:
+            private_loop(bot, contact)
+        ack.assert_not_called()
+        send.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -24,7 +24,7 @@ def reply_payload(archive, batch, persona, stickers=None):
         'current_time': datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='seconds'),
         'persona': persona.partition('原创口吻示例')[0].strip(),
         'instruction': '这是即时群聊。顺着最近正在说的话接一句，不逐条补答旧消息。'
-                       '待答 @ 都要照顾到；必要时带昵称明确回应对象。'
+                       '涉政话题保持安静，即便被 @ 也不回复、不发图。其他待答 @ 都要照顾到；必要时带昵称明确回应对象。'
                        '普通闲聊优先一句短话，通常 10 到 45 个字；接梗、回应、补充都可以。'
                        '认真问题按需展开。遇到能自然接住的具体话题就积极加入，别总当主持人提问。'
                        '只把 recent_messages 中的机器人发言视为已经发出；历史草稿可能未发送。'

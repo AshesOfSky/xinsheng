@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from private_chat import PrivateConversation
+from reply_router import ResearchUnavailable
 
 
 def row(seq, local_id, sender, text, shard='message_0.db'):
@@ -111,6 +112,16 @@ class PrivateConversationTests(unittest.TestCase):
         result = self.chat.generate(incoming, '鱼的人格')
         self.assertIn('https://example.org/source', result['text'])
         self.assertEqual(self.strong.calls, [])
+
+    def test_unverified_research_is_silent_and_keeps_private_request(self):
+        self.chat.start()
+        self.db.rows.append(row(12, 3, 'wxid_friend', '那位球员最近说了什么？'))
+        incoming = self.chat.poll()
+        self.fast.result.update(needs_high=True, needs_web=True, research_message_ids=[incoming[0]['id']])
+        self.high.result.update(text='未查到', sources=[])
+        with self.assertRaises(ResearchUnavailable):
+            self.chat.generate(incoming, '鱼的人格')
+        self.assertEqual([m['id'] for m in self.chat.pending()], [incoming[0]['id']])
 
     def test_failed_work_model_keeps_incoming_request_pending(self):
         self.chat.start()
