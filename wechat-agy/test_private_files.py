@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from private_files import confirm_private_file, send_private_file
+from private_files import _clipboard_matches, confirm_private_file, send_private_file
 from private_host import file_send_hold, private_loop, send_private, PrivateTargetUnavailable
 
 
@@ -33,13 +33,17 @@ class PrivateFilesTests(unittest.TestCase):
         self.gui = SimpleNamespace(_get_db=lambda: self.db, _get_uia=lambda: self.uia,
                                    copy_files_to_clipboard=Mock(return_value=True))
 
-    def invoke(self, paste, submit):
+    def invoke(self, paste, submit, *, clipboard=True, focus=True, sleep=None, draft_timeout=0):
         with patch('win32gui.FindWindow', return_value=123), \
              patch('wechatauto.guia.WeChatGUI', return_value=self.gui), \
              patch('private_files.chat_input', return_value=self.edit), \
              patch('private_files.focus_editor'), patch('private_files.send_keys', side_effect=paste), \
-             patch('private_files.submit', side_effect=submit), patch('private_files.time.sleep'):
-            return send_private_file(self.bot, self.chat, self.contact, self.path, timeout=0)
+             patch('private_files.keyboard_ready', return_value=focus), \
+             patch('private_files._clipboard_matches', side_effect=clipboard if isinstance(clipboard, list) else None,
+                   return_value=clipboard if not isinstance(clipboard, list) else None), \
+             patch('private_files.submit', side_effect=submit), patch('private_files.time.sleep', side_effect=sleep):
+            return send_private_file(self.bot, self.chat, self.contact, self.path, timeout=0,
+                                     draft_timeout=draft_timeout)
 
     def test_sends_under_shared_lock_only_with_exact_visible_file_draft(self):
         def paste(*args):
@@ -54,6 +58,82 @@ class PrivateFilesTests(unittest.TestCase):
         result = self.invoke(paste, submit)
         self.assertEqual(result.status, 'confirmed')
         self.assertFalse((self.bot.data / 'private/wxid_target/file-send-pending').exists())
+
+    def test_observed_placeholder_draft_sends_only_after_confirmation(self):
+        def paste(*args):
+            self.uia._read_edit_value = lambda edit: '\ufffc'
+        def submit(*args):
+            self.db.get_messages.return_value = [{
+                'shard': 'one', 'local_id': 21, 'sender_username': 'wxid_self',
+                'type': '文件/链接/卡片', 'create_time': __import__('time').time(),
+                'content': '<msg><appmsg><type>6</type><title>result.xlsx</title></appmsg></msg>'}]
+        self.assertEqual(self.invoke(paste, submit).status, 'confirmed')
+        self.assertFalse(file_send_hold(self.bot, self.contact).exists())
+
+    def test_waits_until_delayed_placeholder_appears(self):
+        submit = Mock()
+        def appeared(_):
+            self.uia._read_edit_value = lambda edit: '\ufffc'
+        result = self.invoke(lambda *args: None, submit, sleep=appeared, draft_timeout=.5)
+        self.assertEqual(result.status, 'unconfirmed')  # no DB record, not a failed paste
+        submit.assert_called_once()
+        self.assertTrue(file_send_hold(self.bot, self.contact).exists())
+
+    def test_clipboard_mismatch_before_paste_never_touches_input(self):
+        paste, submit = Mock(), Mock()
+        result = self.invoke(paste, submit, clipboard=False)
+        self.assertEqual(result.status, 'not_attempted')
+        paste.assert_not_called()
+        submit.assert_not_called()
+        self.assertFalse(file_send_hold(self.bot, self.contact).exists())
+
+    def test_clipboard_is_one_matching_file_and_is_always_closed(self):
+        with patch('win32clipboard.OpenClipboard') as opened, \
+             patch('win32clipboard.CloseClipboard') as closed, \
+             patch('win32clipboard.IsClipboardFormatAvailable', return_value=True), \
+             patch('win32clipboard.GetClipboardData', return_value=(str(self.path),)) as read:
+            self.assertTrue(_clipboard_matches(self.path.resolve()))
+            read.return_value = (str(self.path), str(self.path))
+            self.assertFalse(_clipboard_matches(self.path.resolve()))
+            read.return_value = (str(self.path.parent / 'other.xlsx'),)
+            self.assertFalse(_clipboard_matches(self.path.resolve()))
+            read.side_effect = RuntimeError('clipboard changed')
+            with self.assertRaises(RuntimeError):
+                _clipboard_matches(self.path.resolve())
+            self.assertEqual(opened.call_count, 4)
+            self.assertEqual(closed.call_count, 4)
+
+    def test_clipboard_changed_after_paste_stays_pending(self):
+        def paste(*args):
+            self.uia._read_edit_value = lambda edit: '\ufffc'
+        submit = Mock()
+        result = self.invoke(paste, submit, clipboard=[True, False])
+        self.assertEqual(result.status, 'unconfirmed')
+        submit.assert_not_called()
+        self.assertTrue(file_send_hold(self.bot, self.contact).exists())
+
+    def test_focus_lost_after_paste_stops_without_click(self):
+        def paste(*args):
+            self.uia._read_edit_value = lambda edit: '\ufffc'
+        submit = Mock()
+        result = self.invoke(paste, submit, focus=False)
+        self.assertEqual(result.status, 'unconfirmed')
+        submit.assert_not_called()
+        self.assertTrue(file_send_hold(self.bot, self.contact).exists())
+
+    def test_placeholder_with_extra_text_or_objects_is_not_a_single_file(self):
+        for value in ('hello\ufffc', '\ufffc\ufffc', None):
+            with self.subTest(value=value):
+                hold = file_send_hold(self.bot, self.contact)
+                hold.unlink(missing_ok=True)
+                self.uia._read_edit_value = lambda edit: ''
+                def paste(*args):
+                    self.uia._read_edit_value = lambda edit: value
+                submit = Mock()
+                result = self.invoke(paste, submit)
+                self.assertEqual(result.status, 'unconfirmed')
+                submit.assert_not_called()
+                self.assertTrue(hold.exists())
 
     def test_existing_draft_is_left_untouched(self):
         self.children.append(node('existing.xlsx'))

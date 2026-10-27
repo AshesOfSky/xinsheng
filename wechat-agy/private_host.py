@@ -79,8 +79,9 @@ def private_loop(bot, contact):
                     bot.stop.wait(bot.config['poll_seconds'])
                     continue
                 if contact.get('relationship') == 'girlfriend':
-                    if file_coordinator is None and any(m['kind'] == '文件/链接/卡片' for m in pending):
-                        from private_file_host import FileCoordinator
+                    from private_file_host import FileCoordinator, is_followup_request
+                    if file_coordinator is None and any(m['kind'] == '文件/链接/卡片' or is_followup_request(m)
+                                                        for m in pending):
                         file_coordinator = FileCoordinator(bot, chat, contact)
                     if file_coordinator:
                         pending, deferred, changed = file_coordinator.step(pending)

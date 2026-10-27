@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
 
-from native_input import chat_input, editor_content_children, editor_empty, focus_editor, send_keys, submit
+from native_input import chat_input, editor_content_children, editor_empty, focus_editor, keyboard_ready, send_keys, submit
 from private_host import PrivateTargetUnavailable, file_send_hold
 
 
@@ -30,6 +30,45 @@ def _file_draft_visible(edit, filename):
             for child in control.GetChildren():
                 yield from names(child, depth - 1)
     return filename in names(children[0], 4)
+
+
+def _clipboard_matches(path):
+    """Read back the actual one-file CF_HDROP payload before and after paste."""
+    import win32clipboard
+    import win32con
+
+    win32clipboard.OpenClipboard()
+    try:
+        if not win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
+            return False
+        files = win32clipboard.GetClipboardData(win32con.CF_HDROP)
+        return len(files) == 1 and Path(files[0]).resolve() == path
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _wait_for_file_draft(uia, edit, contact, path, timeout):
+    """Wait for a recognized single-file draft while the target stays focused.
+
+    WeChat 4.1.15 was observed to expose a single file card as one U+FFFC
+    in ValuePattern and an otherwise empty viewport.  The filename comes from
+    the checked one-file clipboard payload, not from that placeholder.
+    """
+    deadline = time.monotonic() + max(0, timeout)
+    while True:
+        if uia.current_chat() != contact['name'] or not keyboard_ready(uia, edit):
+            raise RuntimeError('私聊或输入焦点发生变化，未点击发送')
+        if not _clipboard_matches(path):
+            raise RuntimeError('文件剪贴板发生变化，未点击发送')
+        value = uia._read_edit_value(edit)
+        if value is None or value not in ('', '\ufffc'):
+            raise RuntimeError('输入框内容无法确认是单个文件草稿，未点击发送')
+        children = editor_content_children(edit)
+        if (value == '\ufffc' and not children) or _file_draft_visible(edit, path.name):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(.2, max(0, deadline - time.monotonic())))
 
 
 def _file_message(row, filename):
@@ -55,12 +94,12 @@ def confirm_private_file(chat, filename, previous_keys, started):
     return False
 
 
-def send_private_file(bot, chat, contact, path, timeout=10):
+def send_private_file(bot, chat, contact, path, timeout=10, draft_timeout=10):
     """Submit one file under the same lock as group and private text sends.
 
     The caller must persist a possibly-sent state *before* calling this method
-    and must not retry an ``unconfirmed`` result.  The input tree needs to
-    expose the attachment's exact filename; otherwise submission stops.
+    and must not retry an ``unconfirmed`` result.  Before submission require
+    either the observed single-file placeholder or an exact accessible name.
     """
     import win32gui
     from wechatauto.guia import WeChatGUI
@@ -97,14 +136,15 @@ def send_private_file(bot, chat, contact, path, timeout=10):
             focus_editor(uia, edit)
             if not gui.copy_files_to_clipboard([str(path)]):
                 raise PrivateTargetUnavailable('无法准备文件剪贴板')
+            if not _clipboard_matches(path):
+                raise PrivateTargetUnavailable('文件剪贴板与目标文件不一致')
             # Persist before paste so a process stop cannot let a later text
             # reply submit an uncertain attachment draft.
             hold.parent.mkdir(parents=True, exist_ok=True)
             hold.touch(exist_ok=False)
             attempted = True
             send_keys(uia, edit, '{Ctrl}v')
-            time.sleep(1)
-            if uia.current_chat() != contact['name'] or not _file_draft_visible(edit, path.name):
+            if not _wait_for_file_draft(uia, edit, contact, path, draft_timeout):
                 return FileSendResult('unconfirmed', '文件草稿无法识别，未点击发送；请检查微信输入框')
             started = time.time()
             submit(uia, contact['name'])

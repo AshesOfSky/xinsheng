@@ -201,11 +201,17 @@ def codex_runner(workdir, request, filename, timeout=600):
         raise FileTaskError('Codex 未生成唯一且格式一致的结果文件')
 
 
-def run_file_task(db, contact_id, row, request, guard, root, *, runner=codex_runner):
+def run_file_task(db, contact_id, row, request, guard, root, *, runner=codex_runner, source_override=None):
     """Return a verified output path; caller owns lifecycle and delivery decisions."""
     if not re.fullmatch(r'[A-Za-z0-9_-]+', contact_id or '') or not request.strip():
         raise FileTaskError('联系人或任务要求无效')
     source = locate_attachment(db, contact_id, row)
+    if source_override is not None:
+        previous = Path(source_override).resolve()
+        private_files = (Path(root) / 'data' / 'private' / contact_id / 'files').resolve()
+        if not previous.is_relative_to(private_files) or not previous.is_file() or previous.suffix.lower() != source.suffix.lower():
+            raise FileTaskError('此前文件处理结果不可用，无法安全继续修改')
+        source = previous
     text = office_text(source)
     verify_reopen(source)
     try:
