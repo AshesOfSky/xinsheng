@@ -7,11 +7,16 @@ from pathlib import Path
 import re
 
 from agy_client import AgySession, CHAT_MODEL, FAST_REPLY_SCHEMA, RESEARCH_REPLY_SCHEMA
+from codex_private import CodexPrivate
 from chat_prompt import compact_message
 from reply_router import researched_reply
 from storage import Archive
 
 PRIVATE_INPUT_TYPES = {'文本', '图片', '语音', '文件/链接/卡片'}
+WORK_REQUEST = re.compile(
+    r'润色|改写|撰写|校对|起草|翻译|审阅|写一份|写一篇|写个|'
+    r'(?:帮(?:我|忙)?|麻烦|请|能否|可以).{0,20}(?:修改|写|整理|总结|分析|计算|设计|优化|想个标题)|'
+    r'(?:再|继续).{0,6}(?:改|写|润色|调整)|(?:改|调整|修改)(?:一下|一版|成|为)', re.S)
 UNREAD_MEDIA_REPLY = '附件、图片或语音里的内容目前还读不到；需要处理其中的文字，请贴出来或描述一下。'
 
 
@@ -25,7 +30,7 @@ def private_model_message(message):
 
 
 class PrivateConversation:
-    def __init__(self, db, root, contact_id, contact_name, *, fast=None, high=None):
+    def __init__(self, db, root, contact_id, contact_name, *, fast=None, high=None, strong=None):
         # `contact_id` comes from the account's contact database, not a display name.
         if not re.fullmatch(r'[A-Za-z0-9_-]+', contact_id or ''):
             raise ValueError('请选择明确的个人微信 ID')
@@ -49,6 +54,8 @@ class PrivateConversation:
             label=f'private-{contact_id}-fast', model=CHAT_MODEL)
         self.high = high or AgySession(schema=RESEARCH_REPLY_SCHEMA,
             label=f'private-{contact_id}-high', agent='wechat-researcher', timeout=180)
+        self.strong = strong or CodexPrivate(root=self.root)
+        self.last_model = None
         self.cursor = None
         self.seen_at_cursor = set()
 
@@ -228,6 +235,7 @@ class PrivateConversation:
         has_unread_media = len(text_ids) != len(messages)
         if not text_ids:
             # No attachment-reading capability is currently connected here.
+            self.last_model = None
             return {'reply': True, 'text': '大肥鱼收到了。' + UNREAD_MEDIA_REPLY}
         recent = self.archive.recent(18)
         payload = {
@@ -235,7 +243,7 @@ class PrivateConversation:
             'persona': persona.partition('原创口吻示例')[0].strip(),
             'instruction': '这是与一位联系人的微信私聊。直接回应对方最新的提问或消息，'
                 '不添加群聊 @，不引用其他聊天或虚构经历。闲聊用简短自然的话回应；'
-                '需要推理、计算、建议或查证的问题标记 needs_high=true。'
+                '需要撰写、修改、润色、审阅、整理材料、推理、计算、建议或查证的问题标记 needs_high=true。'
                 '需要当前信息或对方要求联网时同时标记 needs_web=true。'
                 'research_message_ids 只填本轮需要认真处理的真实文字消息 id；'
                 '不需要深入回答时填空数组。sticker_code 一律填空字符串。'
@@ -247,17 +255,28 @@ class PrivateConversation:
             'unanswered_mentions': [], 'sticker_choices': [], 'member_notes': [],
             'background_questions': [],
         }
+        self.last_model = CHAT_MODEL
         result = self.fast.ask(payload)
         if type(result.get('needs_high')) is not bool or type(result.get('needs_web')) is not bool:
             raise ValueError('快速模型没有返回有效的私聊路由')
-        if result['needs_high'] or result['needs_web']:
+        work_requested = any(m['kind'] == '文本' and WORK_REQUEST.search(m['content']) for m in messages)
+        if result['needs_high'] or result['needs_web'] or work_requested:
             ids = result.get('research_message_ids', [])
             selected = [m for m in payload['new_messages'] if m['id'] in ids and m['id'] in text_ids]
+            if not selected and work_requested:
+                selected = [m for m in payload['new_messages'] if m['id'] in text_ids]
             if not selected:
                 raise ValueError('认真回答没有指向本轮私聊消息')
-            result = researched_reply(self.high, dict(payload, research_questions=selected,
-                instruction=payload['instruction'] + '只回答 research_questions，不使用群聊 @。'),
-                require_web=result['needs_web'])
+            request = dict(payload, research_questions=selected,
+                instruction=payload['instruction'] + '只回答 research_questions，不使用群聊 @。'
+                '修改材料时遵循原文和明确要求，不编造个人经历或未经证实的事实。')
+            if result['needs_web']:
+                # Keep the existing source-checked research path for live information.
+                self.last_model = self.high.model
+                result = researched_reply(self.high, request, require_web=True)
+            else:
+                self.last_model = self.strong.model
+                result = self.strong.ask(request)
         if type(result.get('reply')) is not bool or not isinstance(result.get('text'), str):
             raise ValueError('私聊回复格式不正确')
         text = result['text'].strip()
@@ -269,4 +288,5 @@ class PrivateConversation:
     def close(self):
         self.fast.close()
         self.high.close()
+        self.strong.close()
         self.archive.db.close()

@@ -46,7 +46,8 @@ class PrivateHostTests(unittest.TestCase):
         statuses = []
         archive = SimpleNamespace(record_outgoing=lambda *args: 42,
                                   outgoing_status=lambda *args: statuses.append(args))
-        chat = SimpleNamespace(start=lambda: None, poll=lambda: [incoming],
+        polls = iter([[incoming], []])
+        chat = SimpleNamespace(start=lambda: None, poll=lambda: next(polls, []), last_model='test-model',
                                pending=lambda: [], claim=lambda batch: None,
                                release=lambda batch: None, ack=lambda batch: None,
                                generate=lambda *args: {'reply': True, 'text': '你好'},
@@ -79,8 +80,8 @@ class PrivateHostTests(unittest.TestCase):
         statuses, transitions, generations = [], [], []
         archive = SimpleNamespace(record_outgoing=lambda *args: 42,
                                   outgoing_status=lambda *args: statuses.append(args))
-        polls = iter([[incoming], []])
-        chat = SimpleNamespace(start=lambda: None, pending=lambda: [], poll=lambda: next(polls),
+        polls = iter([[incoming], [], []])
+        chat = SimpleNamespace(start=lambda: None, pending=lambda: [], poll=lambda: next(polls, []), last_model='test-model',
             claim=lambda batch: transitions.append('claim'), release=lambda batch: transitions.append('release'),
             ack=lambda batch: transitions.append('ack'), archive=archive, close=lambda: None,
             generate=lambda *args: (generations.append(1) or {'reply': True, 'text': '你好'}))
@@ -100,6 +101,37 @@ class PrivateHostTests(unittest.TestCase):
         self.assertEqual(generations, [1])
         self.assertEqual(transitions, ['claim', 'release', 'claim', 'ack'])
         self.assertEqual(statuses, [(42, 'cancelled'), (42, 'confirmed')])
+
+    def test_new_instructions_during_generation_replace_old_draft(self):
+        stop = threading.Event()
+        contact = {'id': 'wxid_target', 'name': '朋友'}
+        first = {'id': 1, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
+        second = {'id': 2, 'member_id': contact['id'], 'is_self': False, 'kind': '文本'}
+        polls = iter([[first], [second], [], []])
+        drafts = iter([{'reply':True, 'text':'旧稿'}, {'reply':True, 'text':'新要求的回复'}])
+        batches, sent = [], []
+        archive = SimpleNamespace(record_outgoing=lambda *args: 9, outgoing_status=lambda *args: None)
+        def generate(batch, persona):
+            batches.append([m['id'] for m in batch])
+            return next(drafts)
+        chat = SimpleNamespace(start=lambda:None, pending=lambda:[], poll=lambda:next(polls, []), last_model='test-model',
+            claim=lambda batch:None, release=lambda batch:None, ack=lambda batch:None,
+            generate=generate, archive=archive, close=lambda:None)
+        bot = SimpleNamespace(stop=stop, send_lock=threading.Lock(), bridge=SimpleNamespace(db=None),
+            data=__import__('pathlib').Path(__file__).parent / 'data', config={'poll_seconds':0.01},
+            private_sessions={}, private_sessions_lock=threading.Lock(), update_status=lambda **kw:None)
+        def send(bridge, target, text):
+            sent.append(text)
+            return True, ''
+        def confirm(*args):
+            stop.set()
+            return True
+        with patch('private_host.PrivateConversation', return_value=chat), \
+                patch('private_host.send_private', side_effect=send), \
+                patch('private_host.confirm_private', side_effect=confirm):
+            private_loop(bot, contact)
+        self.assertEqual(batches, [[1], [1, 2]])
+        self.assertEqual(sent, ['新要求的回复'])
 
 
 if __name__ == '__main__':

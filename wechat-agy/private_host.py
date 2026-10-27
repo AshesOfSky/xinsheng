@@ -73,6 +73,12 @@ def private_loop(bot, contact):
                 if draft is None:
                     bot.update_status(private_state='generating')
                     result = chat.generate(batch, (bot.data.parent / 'PERSONA.md').read_text(encoding='utf-8'))
+                    bot.update_status(private_last_model=chat.last_model)
+                    # Private work may take a while; fold in new instructions before sending.
+                    new_messages = chat.poll()
+                    if new_messages:
+                        pending.extend(new_messages)
+                        continue
                     draft = result['text'] if result['reply'] and result['text'] else (
                         '大肥鱼在呢，你把具体需要处理的内容发我，我帮你看看。')
                 if bot.stop.is_set():
@@ -124,7 +130,7 @@ def private_loop(bot, contact):
                     break
                 logging.exception('private reply failed')
                 bot.update_status(private_state='error', private_error=str(exc))
-                bot.stop.wait(3)
+                bot.stop.wait(30 if chat.last_model == 'gpt-6-astra' else 3)
     except Exception as exc:
         if not bot.stop.is_set():
             logging.exception('private listener failed to start')

@@ -477,6 +477,7 @@ class Bot:
             for session in sessions:
                 session.fast.close()
                 session.high.close()
+                session.strong.close()
             reply_thread.join(timeout=8)
             memory_thread.join(timeout=8)
             research_thread.join(timeout=8)

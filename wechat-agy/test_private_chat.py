@@ -25,8 +25,9 @@ class Database:
 
 
 class Model:
-    def __init__(self, result):
+    def __init__(self, result, model='test-model'):
         self.result = result
+        self.model = model
         self.calls = []
         self.last_result = {'steps': []}
         self.closed = False
@@ -46,10 +47,11 @@ class PrivateConversationTests(unittest.TestCase):
         self.fast = Model({'reply': True, 'text': '收到', 'needs_high': False,
                            'needs_web': False, 'research_message_ids': [], 'sticker_code': ''})
         self.high = Model({'reply': True, 'text': '深入回答', 'sources': []})
+        self.strong = Model({'reply': True, 'text': '深入回答'}, model='gpt-6-astra')
         self.db = Database([row(10, 1, 'wxid_friend', '历史来信'),
                             row(11, 2, 'wxid_bot', '历史回复')])
         self.chat = PrivateConversation(self.db, self.root, 'wxid_friend', '朋友',
-                                        fast=self.fast, high=self.high)
+                                        fast=self.fast, high=self.high, strong=self.strong)
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.chat.close)
 
@@ -80,13 +82,46 @@ class PrivateConversationTests(unittest.TestCase):
         self.assertTrue((self.root / 'data/private/wxid_friend/archive.sqlite').exists())
         self.assertFalse((self.root / 'data/archive.sqlite').exists())
 
-    def test_serious_question_uses_private_high_session(self):
+    def test_serious_question_uses_private_strong_session(self):
         self.chat.start()
         self.db.rows.append(row(12, 3, 'wxid_friend', '请仔细算一下'))
         incoming = self.chat.poll()
         self.fast.result.update(needs_high=True, research_message_ids=[incoming[0]['id']])
         self.assertEqual(self.chat.generate(incoming, '鱼的人格')['text'], '深入回答')
-        self.assertEqual(self.high.calls[0]['research_questions'][0]['text'], '请仔细算一下')
+        self.assertEqual(self.strong.calls[0]['research_questions'][0]['text'], '请仔细算一下')
+        self.assertEqual(self.high.calls, [])
+
+    def test_material_edit_uses_strong_even_if_fast_misclassifies(self):
+        self.chat.start()
+        request = '宝宝，你帮我修改以下内容，保留段落，字数不超过一百字：' + '示例文字。' * 80
+        self.db.rows.append(row(12, 3, 'wxid_friend', request))
+        result = self.chat.generate(self.chat.poll(), '鱼的人格')
+        self.assertEqual(result['text'], '深入回答')
+        self.assertEqual(self.chat.last_model, 'gpt-6-astra')
+        self.assertEqual(self.strong.calls[0]['research_questions'][0]['text'], request)
+        self.assertEqual(self.high.calls, [])
+
+    def test_live_research_keeps_verified_web_path(self):
+        self.chat.start()
+        self.db.rows.append(row(12, 3, 'wxid_friend', '请查最新公开数据'))
+        incoming = self.chat.poll()
+        self.fast.result.update(needs_high=True, needs_web=True, research_message_ids=[incoming[0]['id']])
+        self.high.result.update(text='已核对', sources=[{'title':'来源','url':'https://example.org/source'}])
+        self.high.last_result['steps'] = [{'tool':'search_web', 'tool_error':None}]
+        result = self.chat.generate(incoming, '鱼的人格')
+        self.assertIn('https://example.org/source', result['text'])
+        self.assertEqual(self.strong.calls, [])
+
+    def test_failed_work_model_keeps_incoming_request_pending(self):
+        self.chat.start()
+        self.db.rows.append(row(12, 3, 'wxid_friend', '请帮我修改这一段材料'))
+        incoming = self.chat.poll()
+        def fail(payload, **kwargs):
+            raise RuntimeError('Codex 暂时不可用')
+        self.strong.ask = fail
+        with self.assertRaisesRegex(RuntimeError, '暂时不可用'):
+            self.chat.generate(incoming, '鱼的人格')
+        self.assertEqual([m['id'] for m in self.chat.pending()], [incoming[0]['id']])
 
     def test_two_contacts_do_not_share_archive_or_model_context(self):
         self.chat.start()
@@ -96,8 +131,9 @@ class PrivateConversationTests(unittest.TestCase):
         other_fast = Model({'reply': True, 'text': '收到', 'needs_high': False,
                             'needs_web': False, 'research_message_ids': [], 'sticker_code': ''})
         other_high = Model({'reply': True, 'text': '深入回答', 'sources': []})
+        other_strong = Model({'reply': True, 'text': '深入回答'})
         other = PrivateConversation(other_db, self.root, 'wxid_other', '另一位朋友',
-                                    fast=other_fast, high=other_high)
+                                    fast=other_fast, high=other_high, strong=other_strong)
         self.addCleanup(other.close)
         other.start()
         other_db.rows.append(row(21, 9, 'wxid_other', '朋友乙的问题'))
@@ -130,7 +166,7 @@ class PrivateConversationTests(unittest.TestCase):
         text = self.chat.poll()
         self.fast.result.update(needs_high=True, research_message_ids=[text[0]['id']])
         self.chat.generate(text, '鱼的人格')
-        for payload in (self.fast.calls[0], self.high.calls[0]):
+        for payload in (self.fast.calls[0], self.strong.calls[0]):
             encoded = json.dumps(payload, ensure_ascii=False)
             self.assertNotIn('private-image-key', encoded)
             self.assertNotIn('private-voice-url', encoded)
@@ -144,7 +180,7 @@ class PrivateConversationTests(unittest.TestCase):
         picture['type'] = '图片'
         self.db.rows.extend([row(12, 3, 'wxid_friend', '先帮我想个标题'), picture])
         batch = self.chat.poll()
-        self.fast.result['text'] = '可以叫《春日随笔》。'
+        self.strong.result['text'] = '可以叫《春日随笔》。'
         result = self.chat.generate(batch, '鱼的人格')
         self.assertIn('可以叫《春日随笔》。', result['text'])
         self.assertIn('读不到', result['text'])
@@ -162,13 +198,13 @@ class PrivateConversationTests(unittest.TestCase):
         self.db.rows.extend([row(12, 3, 'wxid_friend', '仔细算一下 2 加 2'), attachment])
         batch = self.chat.poll()
         self.fast.result.update(needs_high=True, research_message_ids=[m['id'] for m in batch])
-        self.high.result['text'] = '2 加 2 等于 4。'
+        self.strong.result['text'] = '2 加 2 等于 4。'
         result = self.chat.generate(batch, '鱼的人格')
         self.assertIn('2 加 2 等于 4。', result['text'])
         self.assertIn('读不到', result['text'])
-        research = self.high.calls[0]['research_questions']
+        research = self.strong.calls[0]['research_questions']
         self.assertEqual([m['text'] for m in research], ['仔细算一下 2 加 2'])
-        self.assertNotIn('private-file-key', json.dumps(self.high.calls[0], ensure_ascii=False))
+        self.assertNotIn('private-file-key', json.dumps(self.strong.calls[0], ensure_ascii=False))
 
     def test_cannot_generate_for_another_sender_or_without_baseline(self):
         with self.assertRaises(RuntimeError):
@@ -177,12 +213,12 @@ class PrivateConversationTests(unittest.TestCase):
             self.chat.generate([{'member_id': 'wxid_other', 'is_self': False}], '鱼')
         with self.assertRaises(ValueError):
             PrivateConversation(self.db, self.root, 'wxid_friend@chatroom', '群',
-                                fast=self.fast, high=self.high)
+                                fast=self.fast, high=self.high, strong=self.strong)
 
     def reopen(self):
         self.chat.close()
         self.chat = PrivateConversation(self.db, self.root, 'wxid_friend', '朋友',
-                                        fast=self.fast, high=self.high)
+                                        fast=self.fast, high=self.high, strong=self.strong)
         self.addCleanup(self.chat.close)
         self.chat.start()
 
@@ -194,7 +230,7 @@ class PrivateConversationTests(unittest.TestCase):
         self.db.rows.extend([row(13, 4, 'wxid_friend', '停机期间收到'),
                              row(14, 5, 'wxid_bot', '自己发的')])
         self.chat = PrivateConversation(self.db, self.root, 'wxid_friend', '朋友',
-                                        fast=self.fast, high=self.high)
+                                        fast=self.fast, high=self.high, strong=self.strong)
         self.addCleanup(self.chat.close)
         self.chat.start()
         pending = self.chat.pending()

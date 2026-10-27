@@ -185,7 +185,7 @@ class Desktop(tk.Tk):
         self.settings_note.pack(anchor='w', pady=(0,18))
         found = dependencies()
         ttk.Separator(self.settings).pack(fill='x', pady=8)
-        for key, label in (('agy','AGY CLI · 日常模型'),('codex','Codex CLI · 不确定图片识别')):
+        for key, label in (('agy','AGY CLI · 日常模型'),('codex','Codex CLI · 私聊工作与图片识别')):
             ttk.Label(self.settings, text=f'{label}：'+('已安装' if found[key] else '未检测到'),
                       font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w',pady=6)
         ttk.Label(self.settings, text='CLI 使用你自己的登录和额度，登录是否有效以实际调用为准。\n'
@@ -236,6 +236,8 @@ class Desktop(tk.Tk):
         if running:info += ['Low '+('就绪' if status.get('reply_ready') else '预热中'), 'High '+('就绪' if status.get('reasoning_ready') else '预热中')]
         if running and config.get('private_contacts'):
             info.append('私聊 '+('就绪' if status.get('private_ready') else '启动中'))
+            if status.get('private_last_model'):
+                info.append('私聊最近模型 '+status['private_last_model'])
         if 'model_seconds' in latency:info.append(f"最近生成 {latency['model_seconds']:.1f} 秒")
         if status.get('updated'):info.append('更新 '+status['updated'].replace('T',' '))
         self.details.configure(text='  ·  '.join(info))
